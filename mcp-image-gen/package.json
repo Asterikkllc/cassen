@@ -1,0 +1,20 @@
+{
+  "name": "cassen-mcp-image-gen",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "MCP server exposing a generate_image tool. Backed by Pollinations.ai (free, no auth) by default.",
+  "main": "src/index.mjs",
+  "bin": {
+    "cassen-mcp-image-gen": "src/index.mjs"
+  },
+  "scripts": {
+    "start": "node src/index.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
