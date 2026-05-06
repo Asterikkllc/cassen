@@ -8,7 +8,7 @@ export type UploadResult =
   | { ok: true; url: string }
   | { ok: false; error: string };
 
-const MAX_BYTES = 5 * 1024 * 1024; // 5 MB
+const MAX_BYTES = 5 * 1024 * 1024;
 const ALLOWED_TYPES = ["image/jpeg", "image/png", "image/webp"] as const;
 type AllowedType = (typeof ALLOWED_TYPES)[number];
 
@@ -21,8 +21,6 @@ async function requireAdmin() {
   return Boolean(user && adminEmail && user.email?.toLowerCase() === adminEmail);
 }
 
-// Verify file content matches the claimed MIME type. The browser-supplied
-// `file.type` is attacker-controlled; we sniff the first bytes to confirm.
 function sniffMime(bytes: Uint8Array): AllowedType | null {
   if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
     return "image/jpeg";
@@ -42,14 +40,14 @@ function sniffMime(bytes: Uint8Array): AllowedType | null {
   }
   if (
     bytes.length >= 12 &&
-    bytes[0] === 0x52 && // 'R'
-    bytes[1] === 0x49 && // 'I'
-    bytes[2] === 0x46 && // 'F'
-    bytes[3] === 0x46 && // 'F'
-    bytes[8] === 0x57 && // 'W'
-    bytes[9] === 0x45 && // 'E'
-    bytes[10] === 0x42 && // 'B'
-    bytes[11] === 0x50 // 'P'
+    bytes[0] === 0x52 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x46 &&
+    bytes[8] === 0x57 &&
+    bytes[9] === 0x45 &&
+    bytes[10] === 0x42 &&
+    bytes[11] === 0x50
   ) {
     return "image/webp";
   }
@@ -74,7 +72,6 @@ export async function uploadFounderPhoto(
     return { ok: false, error: "Use JPG, PNG, or WebP." };
   }
 
-  // Sniff actual content. Refuse if magic bytes don't match the claimed MIME.
   const head = new Uint8Array(await file.slice(0, 16).arrayBuffer());
   const sniffed = sniffMime(head);
   if (!sniffed || sniffed !== file.type) {
@@ -86,7 +83,6 @@ export async function uploadFounderPhoto(
 
   const admin = getSupabaseAdmin();
   const ext = sniffed === "image/png" ? "png" : sniffed === "image/webp" ? "webp" : "jpg";
-  // Random suffix to avoid same-millisecond collisions.
   const rand = Math.random().toString(36).slice(2, 10);
   const path = `founder/${Date.now()}-${rand}.${ext}`;
 
@@ -101,8 +97,7 @@ export async function uploadFounderPhoto(
     console.error("[upload] storage error", uploadError);
     return {
       ok: false,
-      error:
-        "Upload failed. Make sure the public-assets bucket exists.",
+      error: "Upload failed. Make sure the public-assets bucket exists.",
     };
   }
 

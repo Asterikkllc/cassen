@@ -166,7 +166,6 @@ function PhotoUploader({
     <div className="flex items-center gap-4">
       <div className="relative h-20 w-20 overflow-hidden rounded-xl border border-neutral-800 bg-neutral-900">
         {currentUrl ? (
-          // Plain img to avoid next/image domain whitelist friction in admin previews.
           // eslint-disable-next-line @next/next/no-img-element
           <img
             src={currentUrl}

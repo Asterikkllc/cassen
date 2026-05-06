@@ -22,8 +22,7 @@ export async function getSupabaseServer() {
             cookieStore.set(name, value, options);
           }
         } catch {
-          // Called from a Server Component — cookies can't be set there.
-          // Middleware refreshes the session, so this is safe to ignore.
+          /* */
         }
       },
     },

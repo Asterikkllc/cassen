@@ -1,3 +1,4 @@
+import Image from "next/image";
 import { hasRealUrl, safeHref } from "@/lib/safe-url";
 import type { FooterContent } from "@/lib/content/types";
 
@@ -21,6 +22,14 @@ export function Footer({ content }: { content: FooterContent }) {
     <footer className="w-full border-t border-neutral-900 bg-neutral-950 px-6 py-12">
       <div className="mx-auto flex max-w-6xl flex-col gap-8 text-sm text-neutral-500 md:flex-row md:items-center md:justify-between">
         <div className="flex items-center gap-3">
+          <Image
+            src="/logo.svg"
+            alt=""
+            width={28}
+            height={28}
+            className="h-7 w-7 rounded-md"
+            priority={false}
+          />
           <span className="text-base font-semibold tracking-tight text-neutral-200">
             {content.wordmark}
           </span>

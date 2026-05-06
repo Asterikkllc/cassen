@@ -4,7 +4,6 @@ import { createServerClient } from "@supabase/ssr";
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  // Only gate /admin (not /admin/login or /auth/callback)
   if (!pathname.startsWith("/admin") || pathname.startsWith("/admin/login")) {
     return NextResponse.next();
   }

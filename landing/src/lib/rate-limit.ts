@@ -2,12 +2,6 @@ import "server-only";
 import { Ratelimit } from "@upstash/ratelimit";
 import { Redis } from "@upstash/redis";
 
-// Production rate limiting backed by Upstash Redis (works on any host —
-// Vercel, Cloudflare, Node — over their REST API). If env vars are missing,
-// we log a loud warning and degrade to in-memory so dev still works, but
-// PRODUCTION DEPLOYMENTS MUST set UPSTASH_REDIS_REST_URL and
-// UPSTASH_REDIS_REST_TOKEN.
-
 const UPSTASH_URL = process.env.UPSTASH_REDIS_REST_URL;
 const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
 
@@ -32,8 +26,6 @@ function getUpstashLimiter(name: string, def: LimiterDef): Ratelimit | null {
   return limiter;
 }
 
-// In-memory fallback for local dev. Resets on cold start; not multi-instance
-// safe. Only used when Upstash env vars are missing.
 type MemEntry = { hits: number[] };
 const memBuckets = new Map<string, MemEntry>();
 let warnedMissingUpstash = false;
@@ -72,10 +64,9 @@ export type RateCheck = {
   retryAfterMs: number;
 };
 
-// Pre-defined limiters. Add more here as new endpoints need throttling.
 export const RATE_LIMITS = {
-  signup_ip: { limit: 5, windowSeconds: 60 * 60 }, // 5 per hour per IP
-  admin_login_ip: { limit: 10, windowSeconds: 60 * 60 }, // 10 per hour per IP
+  signup_ip: { limit: 5, windowSeconds: 60 * 60 },
+  admin_login_ip: { limit: 10, windowSeconds: 60 * 60 },
 } satisfies Record<string, LimiterDef>;
 
 export type LimiterName = keyof typeof RATE_LIMITS;

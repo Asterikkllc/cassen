@@ -28,9 +28,6 @@ export const getSiteContent = cache(async (): Promise<SiteContent> => {
   for (const key of Object.keys(merged) as SectionKey[]) {
     const v = overrides.get(key);
     if (v && typeof v === "object") {
-      // Shallow merge so partial overrides keep default fields they don't touch.
-      // Cast through unknown — we trust DB shape because writes go through the
-      // Zod-validated saveSectionAction.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (merged[key] as any) = { ...merged[key], ...(v as object) };
     }

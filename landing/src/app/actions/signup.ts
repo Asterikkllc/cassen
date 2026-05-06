@@ -10,7 +10,6 @@ import { checkRateLimit, getClientIp } from "@/lib/rate-limit";
 const SignupSchema = z.object({
   email: z.string().trim().toLowerCase().email(),
   referrer: z.string().optional(),
-  // Honeypot: bots fill any text input they see; humans never see this one.
   hp: z.string().max(0).optional(),
 });
 
@@ -29,8 +28,6 @@ export async function signupAction(
   const content = await getSiteContent();
   const errs = content.signup;
 
-  // Honeypot: if filled, return a fake success without doing anything. Bots
-  // get a green checkmark and walk away thinking they won.
   if (typeof hp === "string" && hp.length > 0) {
     console.warn("[signup] honeypot tripped, ignoring submission");
     return { success: true, position: 0 };
@@ -50,7 +47,6 @@ export async function signupAction(
   const { email, referrer } = parsed.data;
   console.log("[signup] validated", { email });
 
-  // Rate limit by client IP.
   const h = await headers();
   const ip = getClientIp(h);
   const rl = await checkRateLimit("signup_ip", ip);

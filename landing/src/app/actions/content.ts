@@ -10,8 +10,6 @@ export type SaveResult =
   | { ok: true }
   | { ok: false; error: string };
 
-// Allowed schemes for admin-supplied link URLs. `javascript:`, `data:`, `vbscript:`,
-// and protocol-relative (`//evil.com`) are explicitly rejected.
 const SAFE_LINK_SCHEME = /^(https?:\/\/|mailto:|#|\/[^/])/i;
 const safeLinkUrl = (max: number) =>
   z
@@ -39,10 +37,6 @@ const HeroSchema = z.object({
   trust_line: z.string().trim().max(200),
 });
 
-// photo_url must point at this project's Supabase Storage public bucket so the
-// Next image optimizer can fetch it (remotePatterns is locked to that host) and
-// so admins can't paste arbitrary URLs that would let the proxy fetch internal
-// services as a bonus. Set when uploadFounderPhoto stores the file.
 const supabaseStoragePrefix = (() => {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   return url ? `${url.replace(/\/$/, "")}/storage/v1/object/public/` : null;

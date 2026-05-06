@@ -1,6 +1,3 @@
-// Defensive URL helpers. The DB Zod validation is the primary gate; these
-// runtime guards exist so a stale row written before the validators don't bite.
-
 const HREF_SCHEMES = /^(https?:|mailto:|#|\/)/i;
 
 export function safeHref(value: string | null | undefined, fallback = "#"): string {
@@ -13,8 +10,6 @@ export function safeHref(value: string | null | undefined, fallback = "#"): stri
   return fallback;
 }
 
-// True when a URL is meaningful enough to render a clickable link for —
-// i.e. not empty, not whitespace, not the bare `#` placeholder.
 export function hasRealUrl(value: string | null | undefined): boolean {
   if (!value) return false;
   const trimmed = value.trim();
@@ -27,7 +22,6 @@ export function safeRedirectPath(
 ): string {
   if (!value) return fallback;
   const trimmed = value.trim();
-  // Only same-origin relative paths. Reject protocol-relative `//x` and absolute URLs.
   if (trimmed.startsWith("/") && !trimmed.startsWith("//")) return trimmed;
   return fallback;
 }

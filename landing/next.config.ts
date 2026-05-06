@@ -7,8 +7,6 @@ const supabaseHostname = supabaseUrl
 
 const nextConfig: NextConfig = {
   images: {
-    // Only allow images from this project's Supabase Storage. Prevents the
-    // Next image proxy from being used for SSRF / arbitrary-host fetches.
     remotePatterns: supabaseHostname
       ? [
           {

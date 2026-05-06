@@ -18,8 +18,6 @@ export async function requestAdminMagicLink(
 ): Promise<AdminLoginResult> {
   const parsed = Schema.safeParse({ email: formData.get("email") });
 
-  // Always return ok: true so the UI never reveals whether the email matched
-  // the admin or whether Supabase accepted it. This prevents email enumeration.
   if (!parsed.success) return { ok: true };
 
   const h = await headers();
@@ -33,8 +31,6 @@ export async function requestAdminMagicLink(
   const submitted = parsed.data.email;
   const adminEmail = process.env.ADMIN_EMAIL?.trim().toLowerCase();
 
-  // Silently no-op if the submitted address isn't the admin's. The user
-  // sees the same "check your inbox" UI either way.
   if (!adminEmail || submitted !== adminEmail) {
     return { ok: true };
   }
@@ -54,7 +50,7 @@ export async function requestAdminMagicLink(
               cookieStore.set(name, value, options);
             }
           } catch {
-            // Server-component cookie set is a no-op here; safe to ignore.
+            /* */
           }
         },
       },

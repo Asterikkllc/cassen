@@ -69,7 +69,6 @@ export function SignupForm({ content, className, onSuccess }: SignupFormProps) {
       action={formAction}
       className={cn("flex w-full max-w-md flex-col gap-3", className)}
     >
-      {/* Honeypot — visually hidden but kept in the DOM. Bots fill it; humans don't. */}
       <div
         aria-hidden="true"
         style={{
