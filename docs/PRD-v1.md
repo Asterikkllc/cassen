@@ -1,4 +1,4 @@
-Now we move on to real production development. You understand security/auth/endpoints/custom images and icons etc and what comprises of production enterprise level infrastructure. use the best practices# Cassen — v1 Product Requirements Document
+Now we move on to real production development. You understand security/auth/endpoints/custom images and icons etc and what comprises of production enterprise level infrastructure. use the best practices and update your memory with every of this so you never lose context of what you're building, where you've built to and where you are to continue from, update your memory everytime automatically# Cassen — v1 Product Requirements Document
 
 **Product:** Cassen — AI Agent for End-to-End Physical Product Creation
 **Domain:** cassen.ai
