@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import { ClerkProvider } from "@clerk/nextjs";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -32,13 +33,38 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html
-      lang="en"
-      className={`dark ${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+    <ClerkProvider
+      appearance={{
+        variables: {
+          colorPrimary: "#10b981",
+          colorBackground: "#0a0a0a",
+          colorInputBackground: "rgba(255,255,255,0.04)",
+          colorInputText: "#fafafa",
+          colorText: "#fafafa",
+          colorTextSecondary: "#a3a3a3",
+          colorNeutral: "#fafafa",
+          borderRadius: "0.625rem",
+        },
+        elements: {
+          card: "bg-neutral-900/80 border border-neutral-800 backdrop-blur",
+          headerTitle: "text-white",
+          headerSubtitle: "text-neutral-400",
+          socialButtonsBlockButton:
+            "bg-neutral-900 border-neutral-800 hover:bg-neutral-800 text-neutral-100",
+          formButtonPrimary:
+            "bg-white text-neutral-950 hover:bg-neutral-200 normal-case",
+          footerActionLink: "text-emerald-400 hover:text-emerald-300",
+        },
+      }}
     >
-      <body className="min-h-full flex flex-col bg-neutral-950 text-neutral-100">
-        {children}
-      </body>
-    </html>
+      <html
+        lang="en"
+        className={`dark ${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      >
+        <body className="min-h-full flex flex-col bg-neutral-950 text-neutral-100">
+          {children}
+        </body>
+      </html>
+    </ClerkProvider>
   );
 }
