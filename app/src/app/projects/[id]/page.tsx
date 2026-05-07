@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { ArrowLeft, Trash2 } from "lucide-react";
 import { auth } from "@clerk/nextjs/server";
 import { SiteHeader } from "@/components/site-header";
+import { AgentRun } from "@/components/agent-run";
 import { Button } from "@/components/ui/button";
 import {
   deleteProjectFromForm,
@@ -77,14 +78,13 @@ export default async function ProjectDetailPage({
           </p>
         </section>
 
-        <section className="mt-6 rounded-2xl border border-dashed border-neutral-800 bg-neutral-900/20 p-6">
+        <section className="mt-6 rounded-2xl border border-neutral-800 bg-neutral-900/20 p-6">
           <p className="text-xs font-medium uppercase tracking-wider text-neutral-500">
             Agent run
           </p>
-          <p className="mt-3 text-sm text-neutral-400">
-            The agent run UI ships in a later phase. For now, this confirms the
-            project was created and is bound to your account.
-          </p>
+          <div className="mt-4">
+            <AgentRun projectId={project.id} />
+          </div>
         </section>
 
         <section className="mt-10 flex items-center justify-between gap-3 border-t border-neutral-900 pt-6 text-xs text-neutral-500">
