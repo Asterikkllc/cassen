@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     research_max_iterations: int = 8
 
     mcp_electronics_path: str | None = None
+    mcp_cad_path: str | None = None
+    cad_base_url: str = "http://127.0.0.1:8002"
+    cad_shared_secret: str | None = None
     uv_command: str = "uv"
 
 

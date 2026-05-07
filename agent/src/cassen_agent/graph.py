@@ -76,6 +76,44 @@ Plain markdown, no preamble. Do not invent MPNs that the researcher didn't \
 return.
 """
 
+MECHANICAL_DESIGN_SYSTEM = """You are the Cassen mechanical designer.
+
+You have CAD tools backed by a build123d service:
+- list_parametric_templates: enumerate the bounded primitives the service \
+ships (enclosure_box, mounting_plate, bracket_l, ...) with input JSON Schemas.
+- generate_part(template, inputs): build a parametric part. Returns \
+{template, inputs, size_bytes, step_b64}.
+- generate_from_script(code, timeout_s?): run an agent-authored \
+build123d script in a sandbox. Use this only when no template fits. \
+The script must end with `result = <build123d shape>`. Imports allowed: \
+`build123d`, `math`. No `os`, `subprocess`, `socket`, etc.
+
+Process:
+1. Call list_parametric_templates first to learn what's available.
+2. Decide on the project's mechanical needs (enclosure? mounting plate? \
+bracket? custom?). Pick the SIMPLEST tool for the job — prefer templates \
+over custom scripts.
+3. Generate the part with realistic dimensions tied to the project (e.g. \
+size the enclosure to fit the chosen MCU + sensors from electronics \
+research, if any).
+4. End your turn with a compact JSON summary:
+   {
+     "mechanical_part": {
+       "template": "...",       // null if generated from script
+       "inputs": { ... },        // empty if from script
+       "from_script": false,     // true when generate_from_script was used
+       "size_bytes": 12345,
+       "rationale": "one sentence"
+     }
+   }
+   No prose after the JSON.
+
+Two to four tool calls is typical — don't over-engineer. If the part \
+is purely structural (e.g. just an enclosure to house electronics), one \
+call is enough.
+"""
+
+
 ELECTRONICS_RESEARCH_SYSTEM = """You are the Cassen electronics researcher.
 
 You have tools backed by live distributor APIs (Digi-Key, Nexar/Octopart, \
@@ -115,6 +153,93 @@ def _domains_from_plan(plan_parsed: dict | None) -> set[str]:
     if not isinstance(raw, list):
         return set()
     return {str(d).strip().lower() for d in raw} & DESIGN_DOMAINS
+
+
+def _extract_trailing_json(text: str) -> dict | None:
+    """Pull the last balanced {...} block from `text` and json.loads it.
+
+    Returns None if there is no balanced block or it doesn't parse.
+    """
+    if not text:
+        return None
+    end = text.rfind("}")
+    if end == -1:
+        return None
+    depth = 0
+    start = -1
+    for i in range(end, -1, -1):
+        ch = text[i]
+        if ch == "}":
+            depth += 1
+        elif ch == "{":
+            depth -= 1
+            if depth == 0:
+                start = i
+                break
+    if start == -1:
+        return None
+    blob = text[start : end + 1]
+    try:
+        parsed = json.loads(blob)
+    except Exception:  # noqa: BLE001
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _extract_mechanical_pick(text: str) -> dict[str, Any] | None:
+    parsed = _extract_trailing_json(text)
+    if not parsed:
+        return None
+    pick = parsed.get("mechanical_part")
+    if not isinstance(pick, dict):
+        return None
+    return {
+        "template": pick.get("template"),
+        "inputs": pick.get("inputs") if isinstance(pick.get("inputs"), dict) else {},
+        "from_script": bool(pick.get("from_script", False)),
+        "size_bytes": int(pick.get("size_bytes") or 0),
+        "rationale": str(pick.get("rationale", "")),
+    }
+
+
+def _redact_step_b64(call: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of a tool-call record with `step_b64` replaced by a
+    size hint, so SSE frames and snapshots don't bloat with binary blobs.
+    The full bytes are captured separately on `research_outputs.mechanical.step_b64`.
+    """
+    out = dict(call)
+    text = out.get("output_text") or ""
+    if not text or "step_b64" not in text:
+        return out
+    try:
+        parsed = json.loads(text)
+    except Exception:  # noqa: BLE001
+        return out
+    if isinstance(parsed, dict) and isinstance(parsed.get("step_b64"), str):
+        n = len(parsed["step_b64"])
+        parsed["step_b64"] = f"<redacted {n} chars>"
+        out["output_text"] = json.dumps(parsed)
+    return out
+
+
+def _last_step_b64_from_calls(calls: list[dict[str, Any]]) -> str | None:
+    """Return the most recent step_b64 produced by a generate_* tool call.
+
+    The tool result is JSON-as-text; parse and pull `step_b64` if present.
+    """
+    for call in reversed(calls):
+        name = call.get("name", "")
+        if name not in {"generate_part", "generate_from_script"}:
+            continue
+        text = call.get("output_text") or ""
+        try:
+            parsed = json.loads(text)
+        except Exception:  # noqa: BLE001
+            continue
+        b64 = parsed.get("step_b64")
+        if isinstance(b64, str) and b64:
+            return b64
+    return None
 
 
 def _extract_candidate_parts(text: str) -> list[dict[str, Any]]:
@@ -394,6 +519,144 @@ async def run_graph(input: GraphInput) -> AsyncIterator[GraphEvent]:
                                 "calls": research_calls,
                             }
 
+                # ---- mechanical design (conditional) ---------------------
+                if "mechanical" in domains and settings.mcp_cad_path:
+                    update_project_status(input.project_id, "designing-mechanical")
+                    yield GraphEvent(
+                        kind="status", data={"status": "designing-mechanical"}
+                    )
+                    yield GraphEvent(kind="node-start", node="mechanical_design")
+
+                    elec = research_outputs.get("electronics") or {}
+                    elec_summary = elec.get("final_text", "") if isinstance(elec, dict) else ""
+
+                    mech_user = (
+                        "Project request:\n"
+                        f"{input.prompt}\n\n"
+                        f"Planner decomposition (JSON):\n{''.join(plan_text_parts)}\n"
+                        + (
+                            f"\nElectronics picks (size enclosure to fit):\n{elec_summary}\n"
+                            if elec_summary
+                            else ""
+                        )
+                    )
+
+                    mech_calls: list[dict[str, Any]] = []
+                    mech_text_parts: list[str] = []
+
+                    with _maybe_span(
+                        langfuse,
+                        name="mechanical_design",
+                        as_type="generation",
+                        input={"prompt": input.prompt},
+                        model=settings.research_model,
+                        model_parameters={
+                            "max_tokens": settings.research_max_tokens,
+                            "max_iterations": settings.research_max_iterations,
+                        },
+                    ) as mech_span:
+                        try:
+                            async with mcp_session(
+                                command=settings.uv_command,
+                                args=[
+                                    "run",
+                                    "--project",
+                                    settings.mcp_cad_path,
+                                    "python",
+                                    "-m",
+                                    "cassen_cad_mcp.server",
+                                ],
+                            ) as session:
+                                async for event_kind, payload in run_tool_using_loop(
+                                    client=client,
+                                    session=session,
+                                    system=MECHANICAL_DESIGN_SYSTEM,
+                                    user_prompt=mech_user,
+                                    model=settings.research_model,
+                                    max_tokens=settings.research_max_tokens,
+                                    max_iterations=settings.research_max_iterations,
+                                ):
+                                    if event_kind == "iteration":
+                                        yield GraphEvent(
+                                            kind="iteration",
+                                            node="mechanical_design",
+                                            data=payload,
+                                        )
+                                    elif event_kind == "assistant-text":
+                                        mech_text_parts.append(payload["text"])
+                                        yield GraphEvent(
+                                            kind="token",
+                                            node="mechanical_design",
+                                            data=payload["text"],
+                                        )
+                                    elif event_kind == "tool-call-start":
+                                        yield GraphEvent(
+                                            kind="tool-call-start",
+                                            node="mechanical_design",
+                                            data=payload,
+                                        )
+                                    elif event_kind == "tool-call-end":
+                                        # Strip step_b64 from the streamed event
+                                        # so the SSE channel doesn't carry tens
+                                        # of KB per call. We still capture the
+                                        # full record in `mech_calls` for the
+                                        # snapshot.
+                                        mech_calls.append(payload)
+                                        public = _redact_step_b64(payload)
+                                        yield GraphEvent(
+                                            kind="tool-call-end",
+                                            node="mechanical_design",
+                                            data=public,
+                                        )
+                                    elif event_kind == "tool-error":
+                                        yield GraphEvent(
+                                            kind="tool-error",
+                                            node="mechanical_design",
+                                            data=payload,
+                                        )
+                                    elif event_kind == "done":
+                                        final_text = payload.get("final_text", "")
+                                        pick = _extract_mechanical_pick(final_text)
+                                        last_b64 = _last_step_b64_from_calls(mech_calls)
+                                        research_outputs["mechanical"] = {
+                                            "final_text": final_text,
+                                            "pick": pick,
+                                            "calls": [
+                                                _redact_step_b64(c) for c in mech_calls
+                                            ],
+                                            "step_b64": last_b64,
+                                            "stop_reason": payload.get("stop_reason"),
+                                        }
+                                        yield GraphEvent(
+                                            kind="node-end",
+                                            node="mechanical_design",
+                                            data={
+                                                "text": final_text,
+                                                "pick": pick,
+                                                "calls_made": len(mech_calls),
+                                                "step_size_bytes": (
+                                                    len(last_b64) * 3 // 4 if last_b64 else 0
+                                                ),
+                                            },
+                                        )
+                                        if mech_span is not None:
+                                            mech_span.update(
+                                                output={
+                                                    "pick": pick,
+                                                    "calls_made": len(mech_calls),
+                                                },
+                                            )
+                        except Exception as exc:  # noqa: BLE001
+                            yield GraphEvent(
+                                kind="tool-error",
+                                node="mechanical_design",
+                                data={"error": str(exc)},
+                            )
+                            research_outputs["mechanical"] = {
+                                "error": str(exc),
+                                "calls": [_redact_step_b64(c) for c in mech_calls],
+                            }
+
                 # ---- designer ---------------------------------------------
                 update_project_status(input.project_id, "designing")
                 yield GraphEvent(kind="status", data={"status": "designing"})
@@ -405,6 +668,17 @@ async def run_graph(input: GraphInput) -> AsyncIterator[GraphEvent]:
                     research_block = (
                         f"\nElectronics research findings:\n"
                         f"{electronics_research['final_text']}\n"
+                    )
+
+                mechanical_research = research_outputs.get("mechanical")
+                if mechanical_research and mechanical_research.get("pick"):
+                    pick = mechanical_research["pick"]
+                    research_block += (
+                        "\nMechanical CAD selection (real STEP geometry produced):\n"
+                        f"- template: {pick.get('template') or 'custom build123d script'}\n"
+                        f"- inputs: {json.dumps(pick.get('inputs') or {})}\n"
+                        f"- size: {pick.get('size_bytes')} bytes\n"
+                        f"- rationale: {pick.get('rationale','')}\n"
                     )
 
                 designer_input = (
@@ -447,19 +721,30 @@ async def run_graph(input: GraphInput) -> AsyncIterator[GraphEvent]:
                                 design_span.update(output={"text": design_text})
 
                 # ---- snapshot + complete ----------------------------------
+                # Strip the bulky mechanical step_b64 from the persisted
+                # snapshot — the version row is meant for human + UI
+                # browsing, not as STEP storage. We keep the metadata
+                # (template, inputs, size, rationale) so the agent can
+                # re-derive it deterministically from cad/ if needed.
+                research_for_snapshot = {**research_outputs}
+                if "mechanical" in research_for_snapshot:
+                    mech = dict(research_for_snapshot["mechanical"])
+                    mech.pop("step_b64", None)
+                    research_for_snapshot["mechanical"] = mech
+
                 snapshot = {
-                    "phase": 6,
+                    "phase": 8,
                     "planner_output": "".join(plan_text_parts),
                     "planner_parsed": plan_parsed,
                     "domains": sorted(domains),
-                    "research": research_outputs,
+                    "research": research_for_snapshot,
                     "designer_output": "".join(design_text_parts),
                 }
                 append_version_snapshot(
                     project_id=input.project_id,
                     snapshot=snapshot,
                     created_by=input.owner_id,
-                    note="Phase 6b run",
+                    note="Phase 8c run",
                 )
                 update_project_status(input.project_id, "draft")
                 yield GraphEvent(kind="complete", data={"status": "draft"})
