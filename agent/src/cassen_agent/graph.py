@@ -23,6 +23,7 @@ from langfuse import Langfuse, propagate_attributes
 
 from .db import append_version_snapshot, update_project_status
 from .settings import get_settings
+from .tools import mcp_session, run_tool_using_loop
 
 
 @dataclass
@@ -62,16 +63,105 @@ Respond in compact JSON:
 No prose outside the JSON.
 """
 
-DESIGNER_SYSTEM = """You are the Cassen designer. Given the planner's decomposition, \
-produce a tight first-pass design sketch:
+DESIGNER_SYSTEM = """You are the Cassen designer. Given the planner's decomposition \
+and any researcher findings, produce a tight first-pass design sketch:
 
-- key components (3-8 items, real categories not SKUs)
+- key components (3-8 items). When the researcher has already grounded electronic \
+parts in real MPNs, use those exact MPNs; for unresearched domains, use real \
+categories/types not SKUs.
 - one-line rationale for each
 - principal risks / unknowns
 
-Plain markdown, no preamble. This is a sketch — Phase 6 will replace it with \
-knowledge-pack-grounded sourcing.
+Plain markdown, no preamble. Do not invent MPNs that the researcher didn't \
+return.
 """
+
+ELECTRONICS_RESEARCH_SYSTEM = """You are the Cassen electronics researcher.
+
+You have tools that search a curated electronics knowledge pack. Use them to \
+ground every electronic component choice in a real, available MPN.
+
+Process:
+1. Identify the electronic functions the project needs (MCU, sensors, power, \
+   communication, drivers/actuators).
+2. For each function, call search_part to discover candidates, then get_part \
+   for top picks. Use recommend_alternative when the obvious first choice has \
+   tradeoffs worth mentioning.
+3. Pick one MPN per function. Note tradeoffs in one sentence.
+4. End your turn with a compact JSON object summarizing your picks:
+   {
+     "candidate_parts": [
+       { "function": "...", "mpn": "...", "rationale": "..." },
+       ...
+     ]
+   }
+   No prose after the JSON.
+
+Do not invent MPNs. If no curated part fits a function, pick the closest \
+match and note the gap in the rationale. Three to seven calls total is \
+typical — don't over-research.
+"""
+
+
+DESIGN_DOMAINS = {"electronics", "mechanical", "fluids"}
+
+
+def _domains_from_plan(plan_parsed: dict | None) -> set[str]:
+    if not plan_parsed:
+        return set()
+    raw = plan_parsed.get("domains") or []
+    if not isinstance(raw, list):
+        return set()
+    return {str(d).strip().lower() for d in raw} & DESIGN_DOMAINS
+
+
+def _extract_candidate_parts(text: str) -> list[dict[str, Any]]:
+    """Pull `candidate_parts` JSON from the researcher's free-form output.
+
+    The researcher's system prompt asks for a trailing JSON block; we
+    locate the last balanced {...} in the text and try to parse it. Best
+    effort — a malformed block returns an empty list and the markdown is
+    still stored in research.final_text.
+    """
+    if not text:
+        return []
+    end = text.rfind("}")
+    if end == -1:
+        return []
+    depth = 0
+    start = -1
+    for i in range(end, -1, -1):
+        ch = text[i]
+        if ch == "}":
+            depth += 1
+        elif ch == "{":
+            depth -= 1
+            if depth == 0:
+                start = i
+                break
+    if start == -1:
+        return []
+    blob = text[start : end + 1]
+    try:
+        parsed = json.loads(blob)
+    except Exception:  # noqa: BLE001
+        return []
+    if not isinstance(parsed, dict):
+        return []
+    parts = parsed.get("candidate_parts")
+    if not isinstance(parts, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for p in parts:
+        if isinstance(p, dict) and p.get("mpn"):
+            out.append(
+                {
+                    "function": str(p.get("function", "")),
+                    "mpn": str(p.get("mpn", "")),
+                    "rationale": str(p.get("rationale", "")),
+                }
+            )
+    return out
 
 
 def _build_langfuse() -> Langfuse | None:
@@ -184,15 +274,142 @@ async def run_graph(input: GraphInput) -> AsyncIterator[GraphEvent]:
                                     output={"text": plan_text, "parsed": plan_parsed},
                                 )
 
+                # ---- electronics research (conditional) -------------------
+                domains = _domains_from_plan(plan_parsed)
+                research_outputs: dict[str, dict[str, Any]] = {}
+
+                if "electronics" in domains and settings.mcp_electronics_path:
+                    update_project_status(input.project_id, "researching")
+                    yield GraphEvent(kind="status", data={"status": "researching"})
+                    yield GraphEvent(kind="node-start", node="electronics_research")
+
+                    research_user = (
+                        "Project request:\n"
+                        f"{input.prompt}\n\n"
+                        f"Planner decomposition (JSON):\n{''.join(plan_text_parts)}\n"
+                    )
+
+                    research_calls: list[dict[str, Any]] = []
+                    research_text_parts: list[str] = []
+
+                    with _maybe_span(
+                        langfuse,
+                        name="electronics_research",
+                        as_type="generation",
+                        input={"prompt": input.prompt},
+                        model=settings.research_model,
+                        model_parameters={
+                            "max_tokens": settings.research_max_tokens,
+                            "max_iterations": settings.research_max_iterations,
+                        },
+                    ) as research_span:
+                        try:
+                            async with mcp_session(
+                                command=settings.uv_command,
+                                args=[
+                                    "run",
+                                    "--project",
+                                    settings.mcp_electronics_path,
+                                    "python",
+                                    "-m",
+                                    "cassen_electronics.server",
+                                ],
+                            ) as session:
+                                async for event_kind, payload in run_tool_using_loop(
+                                    client=client,
+                                    session=session,
+                                    system=ELECTRONICS_RESEARCH_SYSTEM,
+                                    user_prompt=research_user,
+                                    model=settings.research_model,
+                                    max_tokens=settings.research_max_tokens,
+                                    max_iterations=settings.research_max_iterations,
+                                ):
+                                    if event_kind == "iteration":
+                                        yield GraphEvent(
+                                            kind="iteration",
+                                            node="electronics_research",
+                                            data=payload,
+                                        )
+                                    elif event_kind == "assistant-text":
+                                        research_text_parts.append(payload["text"])
+                                        yield GraphEvent(
+                                            kind="token",
+                                            node="electronics_research",
+                                            data=payload["text"],
+                                        )
+                                    elif event_kind == "tool-call-start":
+                                        yield GraphEvent(
+                                            kind="tool-call-start",
+                                            node="electronics_research",
+                                            data=payload,
+                                        )
+                                    elif event_kind == "tool-call-end":
+                                        research_calls.append(payload)
+                                        yield GraphEvent(
+                                            kind="tool-call-end",
+                                            node="electronics_research",
+                                            data=payload,
+                                        )
+                                    elif event_kind == "tool-error":
+                                        yield GraphEvent(
+                                            kind="tool-error",
+                                            node="electronics_research",
+                                            data=payload,
+                                        )
+                                    elif event_kind == "done":
+                                        final_text = payload.get("final_text", "")
+                                        candidates = _extract_candidate_parts(final_text)
+                                        research_outputs["electronics"] = {
+                                            "final_text": final_text,
+                                            "candidate_parts": candidates,
+                                            "calls": research_calls,
+                                            "stop_reason": payload.get("stop_reason"),
+                                        }
+                                        yield GraphEvent(
+                                            kind="node-end",
+                                            node="electronics_research",
+                                            data={
+                                                "text": final_text,
+                                                "candidate_parts": candidates,
+                                                "calls_made": len(research_calls),
+                                            },
+                                        )
+                                        if research_span is not None:
+                                            research_span.update(
+                                                output={
+                                                    "candidate_parts": candidates,
+                                                    "calls_made": len(research_calls),
+                                                },
+                                            )
+                        except Exception as exc:  # noqa: BLE001
+                            yield GraphEvent(
+                                kind="tool-error",
+                                node="electronics_research",
+                                data={"error": str(exc)},
+                            )
+                            research_outputs["electronics"] = {
+                                "error": str(exc),
+                                "calls": research_calls,
+                            }
+
                 # ---- designer ---------------------------------------------
                 update_project_status(input.project_id, "designing")
                 yield GraphEvent(kind="status", data={"status": "designing"})
                 yield GraphEvent(kind="node-start", node="designer")
 
+                research_block = ""
+                electronics_research = research_outputs.get("electronics")
+                if electronics_research and electronics_research.get("final_text"):
+                    research_block = (
+                        f"\nElectronics research findings:\n"
+                        f"{electronics_research['final_text']}\n"
+                    )
+
                 designer_input = (
                     "User request:\n"
                     f"{input.prompt}\n\n"
                     f"Planner decomposition:\n{''.join(plan_text_parts)}\n"
+                    f"{research_block}"
                 )
 
                 design_text_parts: list[str] = []
@@ -229,16 +446,18 @@ async def run_graph(input: GraphInput) -> AsyncIterator[GraphEvent]:
 
                 # ---- snapshot + complete ----------------------------------
                 snapshot = {
-                    "phase": 5,
+                    "phase": 6,
                     "planner_output": "".join(plan_text_parts),
                     "planner_parsed": plan_parsed,
+                    "domains": sorted(domains),
+                    "research": research_outputs,
                     "designer_output": "".join(design_text_parts),
                 }
                 append_version_snapshot(
                     project_id=input.project_id,
                     snapshot=snapshot,
                     created_by=input.owner_id,
-                    note="Phase 5 skeleton run",
+                    note="Phase 6b run",
                 )
                 update_project_status(input.project_id, "draft")
                 yield GraphEvent(kind="complete", data={"status": "draft"})

@@ -18,8 +18,14 @@ class Settings(BaseSettings):
     agent_port: int = 8001
 
     primary_model: str = "claude-sonnet-4-6"
+    research_model: str = "claude-opus-4-7"
     planner_max_tokens: int = 1024
     designer_max_tokens: int = 2048
+    research_max_tokens: int = 4096
+    research_max_iterations: int = 8
+
+    mcp_electronics_path: str | None = None
+    uv_command: str = "uv"
 
 
 _settings: Settings | None = None
