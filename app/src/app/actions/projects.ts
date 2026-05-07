@@ -1,6 +1,8 @@
 "use server";
 
 import { z } from "zod";
+import { redirect } from "next/navigation";
+import { revalidatePath } from "next/cache";
 import { auth } from "@clerk/nextjs/server";
 import { getSupabaseAdmin } from "@/lib/supabase";
 import type { Project } from "@/lib/projects-types";
@@ -50,6 +52,23 @@ export async function createProject(
   return { ok: true, project: data as Project };
 }
 
+export type CreateProjectFormState = {
+  error: string | null;
+};
+
+export async function createProjectFromForm(
+  _prev: CreateProjectFormState | null,
+  formData: FormData,
+): Promise<CreateProjectFormState> {
+  const prompt = String(formData.get("prompt") ?? "");
+  const result = await createProject({ prompt });
+  if (!result.ok) {
+    return { error: result.error };
+  }
+  revalidatePath("/projects");
+  redirect(`/projects/${result.project.id}`);
+}
+
 export async function listMyProjects(limit = 50): Promise<Project[]> {
   const { userId } = await auth();
   if (!userId) return [];
@@ -67,6 +86,25 @@ export async function listMyProjects(limit = 50): Promise<Project[]> {
     return [];
   }
   return (data ?? []) as Project[];
+}
+
+export async function getMyProject(projectId: string): Promise<Project | null> {
+  const { userId } = await auth();
+  if (!userId) return null;
+
+  const admin = getSupabaseAdmin();
+  const { data, error } = await admin
+    .from("projects")
+    .select("*")
+    .eq("id", projectId)
+    .eq("owner_id", userId)
+    .maybeSingle();
+
+  if (error) {
+    console.error("[projects:get] supabase error", error);
+    return null;
+  }
+  return (data as Project) ?? null;
 }
 
 export type DeleteProjectResult =
@@ -90,5 +128,17 @@ export async function deleteProject(
     console.error("[projects:delete] supabase error", error);
     return { ok: false, error: "Could not delete project." };
   }
+  revalidatePath("/projects");
   return { ok: true };
+}
+
+export async function deleteProjectFromForm(formData: FormData): Promise<void> {
+  const id = String(formData.get("project_id") ?? "");
+  if (!id) return;
+  const res = await deleteProject(id);
+  if (!res.ok) {
+    console.error("[projects:delete-form]", res.error);
+    return;
+  }
+  redirect("/projects");
 }
