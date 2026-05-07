@@ -7,6 +7,11 @@ mechanical, fluids) come online in Phase 6+.
 The graph yields events as it runs so the FastAPI surface can stream
 them to the browser. Persistence (Supabase status updates, version
 snapshots) happens at node boundaries.
+
+Note on tracing: Langfuse v4 uses an OpenTelemetry-based API
+(start_as_current_observation, etc.) that's incompatible with the v2
+.trace()/.span() shape. Re-instrumentation is tracked under Phase 5b.
+The graph runs fine without it; only loss is no Langfuse trace per run.
 """
 
 from __future__ import annotations
@@ -17,7 +22,6 @@ from dataclasses import dataclass
 from typing import Any
 
 from anthropic import AsyncAnthropic
-from langfuse import Langfuse
 
 from .db import append_version_snapshot, update_project_status
 from .settings import get_settings
@@ -97,24 +101,6 @@ async def _stream_text(
 async def run_graph(input: GraphInput) -> AsyncIterator[GraphEvent]:
     settings = get_settings()
     client = AsyncAnthropic(api_key=settings.anthropic_api_key)
-    langfuse: Langfuse | None = None
-    if settings.langfuse_public_key and settings.langfuse_secret_key:
-        langfuse = Langfuse(
-            public_key=settings.langfuse_public_key,
-            secret_key=settings.langfuse_secret_key,
-            host=settings.langfuse_host,
-        )
-
-    trace = (
-        langfuse.trace(
-            name="project.run",
-            input={"prompt": input.prompt},
-            user_id=input.owner_id,
-            metadata={"project_id": input.project_id},
-        )
-        if langfuse
-        else None
-    )
 
     try:
         # ---- planner -------------------------------------------------------
@@ -123,7 +109,6 @@ async def run_graph(input: GraphInput) -> AsyncIterator[GraphEvent]:
         yield GraphEvent(kind="node-start", node="planner")
 
         plan_text_parts: list[str] = []
-        plan_span = trace.span(name="planner") if trace else None
         async for kind, chunk in _stream_text(
             client,
             system=PLANNER_SYSTEM,
@@ -146,8 +131,6 @@ async def run_graph(input: GraphInput) -> AsyncIterator[GraphEvent]:
                     node="planner",
                     data={"text": plan_text, "parsed": plan_parsed},
                 )
-                if plan_span:
-                    plan_span.end(output={"text": plan_text, "parsed": plan_parsed})
 
         # ---- designer ------------------------------------------------------
         update_project_status(input.project_id, "designing")
@@ -161,7 +144,6 @@ async def run_graph(input: GraphInput) -> AsyncIterator[GraphEvent]:
         )
 
         design_text_parts: list[str] = []
-        design_span = trace.span(name="designer") if trace else None
         async for kind, chunk in _stream_text(
             client,
             system=DESIGNER_SYSTEM,
@@ -175,8 +157,6 @@ async def run_graph(input: GraphInput) -> AsyncIterator[GraphEvent]:
             elif kind == "full":
                 design_text = chunk
                 yield GraphEvent(kind="node-end", node="designer", data={"text": design_text})
-                if design_span:
-                    design_span.end(output={"text": design_text})
 
         # ---- snapshot + complete ------------------------------------------
         snapshot = {
@@ -192,15 +172,7 @@ async def run_graph(input: GraphInput) -> AsyncIterator[GraphEvent]:
         )
         update_project_status(input.project_id, "draft")
         yield GraphEvent(kind="complete", data={"status": "draft"})
-
-        if trace:
-            trace.update(output=snapshot)
     except Exception as exc:  # noqa: BLE001
         update_project_status(input.project_id, "failed")
         yield GraphEvent(kind="error", data={"message": str(exc)})
-        if trace:
-            trace.update(level="ERROR", status_message=str(exc))
         raise
-    finally:
-        if langfuse:
-            langfuse.flush()
