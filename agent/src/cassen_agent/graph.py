@@ -4,24 +4,22 @@ Phase 5 skeleton: planner -> designer. Each node calls Claude for real
 reasoning but the prompts are minimal — knowledge packs (electronics,
 mechanical, fluids) come online in Phase 6+.
 
-The graph yields events as it runs so the FastAPI surface can stream
-them to the browser. Persistence (Supabase status updates, version
-snapshots) happens at node boundaries.
-
-Note on tracing: Langfuse v4 uses an OpenTelemetry-based API
-(start_as_current_observation, etc.) that's incompatible with the v2
-.trace()/.span() shape. Re-instrumentation is tracked under Phase 5b.
-The graph runs fine without it; only loss is no Langfuse trace per run.
+Tracing: Langfuse v4 (OpenTelemetry-based). Wraps the run in
+`propagate_attributes` for trace-level user_id/metadata, then spans
+each node via `start_as_current_observation(as_type="generation")`.
+Falls through to a nullcontext when LANGFUSE keys are missing.
 """
 
 from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any
 
 from anthropic import AsyncAnthropic
+from langfuse import Langfuse, propagate_attributes
 
 from .db import append_version_snapshot, update_project_status
 from .settings import get_settings
@@ -76,6 +74,35 @@ knowledge-pack-grounded sourcing.
 """
 
 
+def _build_langfuse() -> Langfuse | None:
+    s = get_settings()
+    if not (s.langfuse_public_key and s.langfuse_secret_key):
+        return None
+    return Langfuse(
+        public_key=s.langfuse_public_key,
+        secret_key=s.langfuse_secret_key,
+        host=s.langfuse_host,
+    )
+
+
+def _maybe_propagate(langfuse: Langfuse | None, **attrs: Any):
+    if langfuse is None:
+        return nullcontext()
+    return propagate_attributes(**attrs)
+
+
+def _maybe_span(
+    langfuse: Langfuse | None,
+    *,
+    name: str,
+    as_type: str = "span",
+    **kw: Any,
+):
+    if langfuse is None:
+        return nullcontext(None)
+    return langfuse.start_as_current_observation(name=name, as_type=as_type, **kw)
+
+
 async def _stream_text(
     client: AsyncAnthropic,
     *,
@@ -101,78 +128,135 @@ async def _stream_text(
 async def run_graph(input: GraphInput) -> AsyncIterator[GraphEvent]:
     settings = get_settings()
     client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+    langfuse = _build_langfuse()
 
     try:
-        # ---- planner -------------------------------------------------------
-        update_project_status(input.project_id, "planning")
-        yield GraphEvent(kind="status", data={"status": "planning"})
-        yield GraphEvent(kind="node-start", node="planner")
-
-        plan_text_parts: list[str] = []
-        async for kind, chunk in _stream_text(
-            client,
-            system=PLANNER_SYSTEM,
-            prompt=input.prompt,
-            model=settings.primary_model,
-            max_tokens=settings.planner_max_tokens,
+        with _maybe_propagate(
+            langfuse,
+            user_id=input.owner_id,
+            metadata={"project_id": input.project_id},
+            trace_name="project.run",
         ):
-            if kind == "token":
-                plan_text_parts.append(chunk)
-                yield GraphEvent(kind="token", node="planner", data=chunk)
-            elif kind == "full":
-                plan_text = chunk
+            with _maybe_span(
+                langfuse,
+                name="project.run",
+                as_type="span",
+                input={"prompt": input.prompt},
+            ) as root_span:
+                # ---- planner ----------------------------------------------
+                update_project_status(input.project_id, "planning")
+                yield GraphEvent(kind="status", data={"status": "planning"})
+                yield GraphEvent(kind="node-start", node="planner")
+
+                plan_text_parts: list[str] = []
                 plan_parsed: dict | None = None
-                try:
-                    plan_parsed = json.loads(plan_text.strip().strip("`"))
-                except Exception:  # noqa: BLE001
-                    pass
-                yield GraphEvent(
-                    kind="node-end",
-                    node="planner",
-                    data={"text": plan_text, "parsed": plan_parsed},
+                with _maybe_span(
+                    langfuse,
+                    name="planner",
+                    as_type="generation",
+                    input={"prompt": input.prompt},
+                    model=settings.primary_model,
+                    model_parameters={"max_tokens": settings.planner_max_tokens},
+                ) as plan_span:
+                    async for kind, chunk in _stream_text(
+                        client,
+                        system=PLANNER_SYSTEM,
+                        prompt=input.prompt,
+                        model=settings.primary_model,
+                        max_tokens=settings.planner_max_tokens,
+                    ):
+                        if kind == "token":
+                            plan_text_parts.append(chunk)
+                            yield GraphEvent(kind="token", node="planner", data=chunk)
+                        elif kind == "full":
+                            plan_text = chunk
+                            try:
+                                plan_parsed = json.loads(plan_text.strip().strip("`"))
+                            except Exception:  # noqa: BLE001
+                                plan_parsed = None
+                            yield GraphEvent(
+                                kind="node-end",
+                                node="planner",
+                                data={"text": plan_text, "parsed": plan_parsed},
+                            )
+                            if plan_span is not None:
+                                plan_span.update(
+                                    output={"text": plan_text, "parsed": plan_parsed},
+                                )
+
+                # ---- designer ---------------------------------------------
+                update_project_status(input.project_id, "designing")
+                yield GraphEvent(kind="status", data={"status": "designing"})
+                yield GraphEvent(kind="node-start", node="designer")
+
+                designer_input = (
+                    "User request:\n"
+                    f"{input.prompt}\n\n"
+                    f"Planner decomposition:\n{''.join(plan_text_parts)}\n"
                 )
 
-        # ---- designer ------------------------------------------------------
-        update_project_status(input.project_id, "designing")
-        yield GraphEvent(kind="status", data={"status": "designing"})
-        yield GraphEvent(kind="node-start", node="designer")
+                design_text_parts: list[str] = []
+                with _maybe_span(
+                    langfuse,
+                    name="designer",
+                    as_type="generation",
+                    input={
+                        "prompt": input.prompt,
+                        "planner_output": "".join(plan_text_parts),
+                    },
+                    model=settings.primary_model,
+                    model_parameters={"max_tokens": settings.designer_max_tokens},
+                ) as design_span:
+                    async for kind, chunk in _stream_text(
+                        client,
+                        system=DESIGNER_SYSTEM,
+                        prompt=designer_input,
+                        model=settings.primary_model,
+                        max_tokens=settings.designer_max_tokens,
+                    ):
+                        if kind == "token":
+                            design_text_parts.append(chunk)
+                            yield GraphEvent(kind="token", node="designer", data=chunk)
+                        elif kind == "full":
+                            design_text = chunk
+                            yield GraphEvent(
+                                kind="node-end",
+                                node="designer",
+                                data={"text": design_text},
+                            )
+                            if design_span is not None:
+                                design_span.update(output={"text": design_text})
 
-        designer_input = (
-            "User request:\n"
-            f"{input.prompt}\n\n"
-            f"Planner decomposition:\n{''.join(plan_text_parts)}\n"
-        )
+                # ---- snapshot + complete ----------------------------------
+                snapshot = {
+                    "phase": 5,
+                    "planner_output": "".join(plan_text_parts),
+                    "planner_parsed": plan_parsed,
+                    "designer_output": "".join(design_text_parts),
+                }
+                append_version_snapshot(
+                    project_id=input.project_id,
+                    snapshot=snapshot,
+                    created_by=input.owner_id,
+                    note="Phase 5 skeleton run",
+                )
+                update_project_status(input.project_id, "draft")
+                yield GraphEvent(kind="complete", data={"status": "draft"})
 
-        design_text_parts: list[str] = []
-        async for kind, chunk in _stream_text(
-            client,
-            system=DESIGNER_SYSTEM,
-            prompt=designer_input,
-            model=settings.primary_model,
-            max_tokens=settings.designer_max_tokens,
-        ):
-            if kind == "token":
-                design_text_parts.append(chunk)
-                yield GraphEvent(kind="token", node="designer", data=chunk)
-            elif kind == "full":
-                design_text = chunk
-                yield GraphEvent(kind="node-end", node="designer", data={"text": design_text})
-
-        # ---- snapshot + complete ------------------------------------------
-        snapshot = {
-            "phase": 5,
-            "planner_output": "".join(plan_text_parts),
-            "designer_output": "".join(design_text_parts),
-        }
-        append_version_snapshot(
-            project_id=input.project_id,
-            snapshot=snapshot,
-            created_by=input.owner_id,
-            note="Phase 5 skeleton run",
-        )
-        update_project_status(input.project_id, "draft")
-        yield GraphEvent(kind="complete", data={"status": "draft"})
+                if root_span is not None:
+                    root_span.update(output=snapshot)
     except Exception as exc:  # noqa: BLE001
         update_project_status(input.project_id, "failed")
+        if langfuse is not None:
+            try:
+                langfuse.update_current_span(level="ERROR", status_message=str(exc))
+            except Exception:  # noqa: BLE001
+                pass
         yield GraphEvent(kind="error", data={"message": str(exc)})
         raise
+    finally:
+        if langfuse is not None:
+            try:
+                langfuse.flush()
+            except Exception:  # noqa: BLE001
+                pass
