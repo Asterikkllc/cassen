@@ -1,12 +1,14 @@
-"""Combine providers behind a single fallback chain.
+"""Live-only provider chain. No in-repo dataset.
 
-search_part: Nexar → Mouser → curated
-get_part:    Nexar → Digi-Key → Mouser → curated
+Chains:
+    search_part:           Nexar -> Mouser
+    get_part:              Nexar -> Digi-Key -> Mouser
+    recommend_alternative: get_part -> derive an MPN family prefix ->
+                           search the chain again, drop the original
 
-Each result is annotated with its `source` so the agent (or a debugger)
-can tell which provider produced a row. Curated alternatives stay
-authoritative for `recommend_alternative` since live distributor APIs
-don't expose "functional substitutes".
+Each result is annotated with `source` so the caller (or a debugger) can
+tell which provider produced the row, and a full `attempts` trace
+documents every provider that was tried.
 """
 
 from __future__ import annotations
@@ -16,15 +18,43 @@ from typing import Any
 from .cache import CACHE
 from .config import get_settings
 from .providers.base import PartProvider
-from .providers.curated import CuratedProvider
 from .providers.digikey import DigiKeyProvider
 from .providers.mouser import MouserProvider
 from .providers.nexar import NexarProvider
 
+# Distributors don't share a single taxonomy. We surface a small handful of
+# common categories so the agent has sensible defaults to filter by; the
+# actual category strings on returned rows come from each distributor.
+_COMMON_CATEGORIES = [
+    "microcontroller",
+    "sensor",
+    "power",
+    "communication",
+    "driver",
+    "actuator",
+    "passive",
+    "connector",
+]
+
+
+def _mpn_family(mpn: str) -> str:
+    """Heuristic family prefix used to seed alternative lookups.
+
+    Takes the first hyphen-separated chunk and caps at 6 characters.
+    Examples:
+      ESP32-WROOM-32E -> ESP32
+      ATmega328P-PU   -> ATmega
+      STM32F103C8T6   -> STM32F
+      L298N           -> L298N
+    """
+    if not mpn:
+        return ""
+    head = mpn.split("-", 1)[0]
+    return head[:6]
+
 
 class Aggregator:
     def __init__(self) -> None:
-        self.curated = CuratedProvider()
         self.nexar = NexarProvider()
         self.mouser = MouserProvider()
         self.digikey = DigiKeyProvider()
@@ -32,9 +62,13 @@ class Aggregator:
 
     @property
     def search_chain(self) -> list[PartProvider]:
+        # Digi-Key first because Nexar's free tier has a tight daily quota
+        # (10 parts/day) — Digi-Key's keyword search is more generous in
+        # practice. Mouser slots in as the third option once its key is
+        # activated.
         return [
             p
-            for p in (self.nexar, self.mouser, self.curated)
+            for p in (self.digikey, self.nexar, self.mouser)
             if p.configured
         ]
 
@@ -42,20 +76,25 @@ class Aggregator:
     def get_chain(self) -> list[PartProvider]:
         return [
             p
-            for p in (self.nexar, self.digikey, self.mouser, self.curated)
+            for p in (self.digikey, self.nexar, self.mouser)
             if p.configured
         ]
 
     def list_categories(self) -> dict[str, Any]:
+        configured = [
+            p.name
+            for p in (self.nexar, self.mouser, self.digikey)
+            if p.configured
+        ]
         return {
-            "categories": self.curated.categories,
-            "curated_part_count": len(self.curated._parts),
-            "schema_version": self.curated.schema_version,
-            "configured_providers": [
-                p.name
-                for p in (self.nexar, self.mouser, self.digikey, self.curated)
-                if p.configured
-            ],
+            "common_categories": _COMMON_CATEGORIES,
+            "configured_providers": configured,
+            "note": (
+                "Each distributor uses its own taxonomy; rows returned by "
+                "search_part / get_part carry the provider's category string. "
+                "common_categories are sensible defaults to use as the "
+                "`category` filter on search_part."
+            ),
         }
 
     def search(
@@ -69,6 +108,17 @@ class Aggregator:
         cached = CACHE.get(cache_key)
         if cached:
             return cached
+
+        if not self.search_chain:
+            return {
+                "query": query,
+                "category": category,
+                "results": [],
+                "returned": 0,
+                "source": None,
+                "attempts": [],
+                "error": "No live providers configured (set NEXAR_* or MOUSER_API_KEY).",
+            }
 
         attempts: list[dict[str, Any]] = []
         for p in self.search_chain:
@@ -106,6 +156,12 @@ class Aggregator:
         if cached:
             return cached
 
+        if not self.get_chain:
+            return {
+                "error": "No live providers configured (set NEXAR_*, DIGIKEY_*, or MOUSER_API_KEY).",
+                "attempts": [],
+            }
+
         attempts: list[dict[str, Any]] = []
         for p in self.get_chain:
             try:
@@ -131,33 +187,48 @@ class Aggregator:
         self,
         mpn: str,
         reason: str | None = None,
+        limit: int = 5,
     ) -> dict[str, Any]:
+        """Family-prefix search across live providers, with the original
+        MPN filtered out. Best-effort — distributor APIs don't expose a
+        first-class 'functional substitute' relationship.
+        """
         if not mpn:
             return {"error": "mpn is required"}
-        # Curated alternatives only — see module docstring.
-        alternatives, missing = self.curated.find_alternatives(mpn)
-        # If curated has no record but live providers do, return a stub
-        # so the agent gets useful context.
-        if not alternatives and not missing and not self.curated.get(mpn):
-            live = self.get(mpn)
-            if "part" in live:
-                return {
-                    "original_mpn": mpn,
-                    "reason": reason,
-                    "alternatives": [],
-                    "missing_from_dataset": [],
-                    "note": (
-                        "Curated dataset has no alternatives entry for this MPN. "
-                        "Live data from "
-                        f"{live.get('source')} is available via get_part."
-                    ),
-                }
-        original = self.curated.get(mpn) or {}
+
+        original = self.get(mpn)
+        if "error" in original:
+            return {
+                "original_mpn": mpn,
+                "reason": reason,
+                "alternatives": [],
+                "error": original["error"],
+                "attempts": original.get("attempts", []),
+            }
+
+        family = _mpn_family(mpn)
+        sr = self.search(family, limit=max(limit + 3, 6))
+        target = mpn.upper()
+        original_part = original.get("part") or {}
+        candidates = [
+            r
+            for r in (sr.get("results") or [])
+            if (r.get("mpn") or "").upper() != target
+            and (r.get("mpn") or "").upper() != (original_part.get("mpn") or "").upper()
+        ][:limit]
+
         return {
-            "original_mpn": original.get("mpn") or mpn,
+            "original_mpn": original_part.get("mpn") or mpn,
             "reason": reason,
-            "alternatives": alternatives,
-            "missing_from_dataset": missing,
+            "family_query": family,
+            "alternatives": candidates,
+            "search_attempts": sr.get("attempts", []),
+            "get_attempts": original.get("attempts", []),
+            "note": (
+                "Family-prefix heuristic. For a tighter list, call search_part "
+                "with the same category as the original (returned in the part "
+                "body) and review by spec."
+            ),
         }
 
 
@@ -169,3 +240,5 @@ def get_aggregator() -> Aggregator:
     if _aggregator is None:
         _aggregator = Aggregator()
     return _aggregator
+
+

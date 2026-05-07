@@ -1,8 +1,7 @@
 # cassen-mcp-electronics
 
-First Cassen v1 knowledge pack: **electronics**. MCP server exposing
-parts search/lookup tools so the agent can ground designs in real
-components instead of hallucinating SKUs.
+Cassen v1 electronics knowledge pack. MCP server exposing parts
+search/lookup tools so the agent grounds designs in real components.
 
 Sibling of `agent/` (Python LangGraph) and `app/` (Next.js).
 
@@ -10,20 +9,29 @@ Sibling of `agent/` (Python LangGraph) and `app/` (Next.js).
 
 | name                    | params                               | what it does |
 |-------------------------|--------------------------------------|--------------|
-| `list_categories`       | —                                    | available categories + part count |
-| `search_part`           | `query`, `category?`, `limit?` (≤50) | fuzzy search across mpn/maker/desc/tags |
+| `list_categories`       | —                                    | common category labels + configured live providers |
+| `search_part`           | `query`, `category?`, `limit?` (≤50) | live keyword search via the chain |
 | `get_part`              | `mpn`                                | full record for one MPN |
-| `recommend_alternative` | `mpn`, `reason?`                     | substitutes per the curated `alternatives` list |
+| `recommend_alternative` | `mpn`, `reason?`                     | family-prefix lookup, original filtered out |
 
-## Data
+## Data sources
 
-`data/parts.json` is a curated seed of ~25 popular real parts spanning
-MCU, sensor, power, comms, and driver categories. Schema is documented
-inline.
+Live-only. Provider chains:
 
-Replace with live distributor lookups in Phase 6c — keep the **tool
-contract identical**, just swap the `_load_dataset()` /
-`recommend_alternative()` internals.
+| tool | chain (first hit wins) |
+|---|---|
+| `search_part`           | Nexar → Mouser |
+| `get_part`              | Nexar → Digi-Key → Mouser |
+| `recommend_alternative` | uses get_part + search_part |
+
+Each row is annotated with `source` and the response carries an
+`attempts` array so the caller can see which providers were tried.
+
+## Configure
+
+Set the live provider creds in `.env` (gitignored). At least one of
+Nexar / Mouser / Digi-Key needs to be set or every tool returns a
+"no providers configured" error. See `.env.example` for the shape.
 
 ## Run locally
 
@@ -33,15 +41,7 @@ uv sync
 uv run python -m cassen_electronics.server
 ```
 
-Or via the registered script:
-
-```sh
-uv run cassen-mcp-electronics
-```
-
 ## Register with Claude Code
-
-Add to `~/.claude.json` under `mcpServers`:
 
 ```json
 {
@@ -66,10 +66,9 @@ Restart Claude Code. The four tools become callable as
 
 ## What's NOT here yet (later phases)
 
-- **Phase 6b** wires this server into the agent's LangGraph as an
-  `electronics_research` node. Right now the server is callable from
-  Claude Code but the production agent doesn't talk to it.
-- **Phase 6c** swaps the JSON data source for live Digi-Key Product
-  Information API + Mouser Search API + Nexar GraphQL aggregation.
-- **Phase 31** captures simulation outcomes back into a parts-grounding
-  corpus so search ranks better as more projects ship.
+- Persistent cache (Redis / Supabase) so cache survives MCP restarts.
+- Multi-distributor offer aggregation (sellers, prices by quantity,
+  inventory levels) — Nexar already exposes this; we just don't read
+  it yet. Becomes a Phase 20+ marketplace concern.
+- Datasheet PDF parsing — Phase 25 (Deep Research mode) owns
+  LlamaParse / Reducto.

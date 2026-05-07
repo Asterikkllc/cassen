@@ -24,9 +24,6 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/cassen_electronics"]
 
-[tool.hatch.build.targets.wheel.force-include]
-"data" = "cassen_electronics/data"
-
 [tool.ruff]
 line-length = 100
 target-version = "py312"

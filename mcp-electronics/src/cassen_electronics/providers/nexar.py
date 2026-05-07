@@ -36,7 +36,7 @@ octopartUrl
 
 SEARCH_QUERY = (
     "query Search($q: String!, $limit: Int!) {\n"
-    "  supSearchMpn(q: $q, limit: $limit, currency: \"USD\") {\n"
+    "  supSearch(q: $q, limit: $limit, currency: \"USD\") {\n"
     "    results { part { " + _PART_FIELDS + " } }\n"
     "  }\n"
     "}\n"
@@ -112,18 +112,20 @@ class NexarProvider(PartProvider):
     def _post(self, query: str, variables: dict[str, Any]) -> dict[str, Any] | None:
         token = self._token()
         if not token:
-            return None
-        try:
-            resp = httpx.post(
-                GRAPHQL_URL,
-                headers={"Authorization": f"Bearer {token}"},
-                json={"query": query, "variables": variables},
-                timeout=self._s.request_timeout_s,
-            )
-            resp.raise_for_status()
-            return resp.json()
-        except Exception:  # noqa: BLE001
-            return None
+            raise RuntimeError("nexar: token exchange failed")
+        resp = httpx.post(
+            GRAPHQL_URL,
+            headers={"Authorization": f"Bearer {token}"},
+            json={"query": query, "variables": variables},
+            timeout=self._s.request_timeout_s,
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        errs = body.get("errors")
+        if errs:
+            msg = (errs[0] or {}).get("message", "nexar graphql error")
+            raise RuntimeError(f"nexar: {msg}")
+        return body
 
     def search(
         self,
@@ -141,7 +143,7 @@ class NexarProvider(PartProvider):
         if not data:
             return []
         results = (
-            ((data.get("data") or {}).get("supSearchMpn") or {}).get("results") or []
+            ((data.get("data") or {}).get("supSearch") or {}).get("results") or []
         )
         out: list[dict[str, Any]] = []
         for r in results:

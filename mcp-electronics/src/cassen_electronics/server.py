@@ -1,13 +1,8 @@
 """Cassen v1 — electronics knowledge pack MCP server.
 
-Tools exposed (stable contract — see Aggregator for the data layer):
-- list_categories()       -> categories + provider list + curated count
-- search_part(query, ...) -> Nexar -> Mouser -> curated, normalized rows
-- get_part(mpn)           -> Nexar -> Digi-Key -> Mouser -> curated
-- recommend_alternative(mpn, reason?) -> curated alternatives list
-
-All four were Phase 6a; Phase 6c added the live distributor providers
-behind the same surface.
+Live-only data layer (Nexar, Digi-Key, Mouser). The four tools below
+share a stable contract so callers don't change when providers are
+added or swapped.
 """
 
 from __future__ import annotations
@@ -23,12 +18,12 @@ server = FastMCP("cassen-electronics")
 
 @server.tool()
 def list_categories() -> dict[str, Any]:
-    """List the available part categories in this knowledge pack and the
-    set of configured live-data providers (Nexar, Mouser, Digi-Key, curated).
+    """Return common electronics categories for use as the `category`
+    filter on search_part, plus the list of configured live providers
+    (Nexar, Mouser, Digi-Key).
 
-    Categories are the curated taxonomy; live providers each carry their
-    own taxonomy. Use list_categories() to learn what's available; use
-    search_part() to query.
+    Each distributor exposes its own taxonomy; the rows returned by
+    search_part / get_part carry the provider's own `category` string.
     """
     return get_aggregator().list_categories()
 
@@ -39,14 +34,15 @@ def search_part(
     category: str | None = None,
     limit: int = 10,
 ) -> dict[str, Any]:
-    """Search the electronics parts library.
+    """Search the live electronics catalog.
 
     Provider chain: Nexar (multi-distributor: Digi-Key, Mouser, LCSC, …)
-    → Mouser keyword search → curated in-repo dataset. The first
-    provider that returns ≥1 row wins; chain is logged in `attempts`.
+    → Mouser keyword search. The first provider that returns ≥1 row
+    wins; the chain is logged in `attempts`.
 
     `query` is the free-text search (mpn, manufacturer, function,
-    description). `category` optionally narrows results (case-insensitive).
+    description). `category` optionally narrows results
+    (case-insensitive, matched on each row's `category` field).
     `limit` is capped at 50.
     """
     if limit < 1:
@@ -60,9 +56,9 @@ def search_part(
 def get_part(mpn: str) -> dict[str, Any]:
     """Fetch the full record for a single part by exact MPN.
 
-    Provider chain: Nexar → Digi-Key → Mouser → curated. First hit wins.
-    Returns `{ part, source, attempts }` on success or
-    `{ error, attempts }` if no provider knew the MPN.
+    Provider chain: Nexar → Digi-Key → Mouser. First hit wins. Returns
+    `{ part, source, attempts }` on success or `{ error, attempts }`
+    if no provider knew the MPN.
     """
     return get_aggregator().get(mpn)
 
@@ -71,8 +67,15 @@ def get_part(mpn: str) -> dict[str, Any]:
 def recommend_alternative(mpn: str, reason: str | None = None) -> dict[str, Any]:
     """Find functionally-similar alternatives to a given MPN.
 
-    Backed by the curated `alternatives` list per part (live distributor
-    APIs don't expose functional substitutes — that's a derived concept).
+    Best-effort live lookup: the original MPN is fetched to confirm it
+    exists, a family prefix is derived from the MPN (first hyphen-
+    separated chunk, capped at 6 chars — e.g. ESP32-WROOM-32E → ESP32),
+    and the family is searched across the live chain. The original is
+    filtered out of the result.
+
+    Distributor APIs don't expose a structured "functional substitute"
+    relationship; for a tighter list, the agent can call search_part
+    with the original part's category and pick by spec.
     `reason` is recorded for future ranking.
     """
     return get_aggregator().recommend_alternative(mpn, reason)

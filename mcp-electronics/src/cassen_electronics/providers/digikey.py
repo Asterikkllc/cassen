@@ -20,7 +20,6 @@ from .base import PartProvider, normalize_lifecycle
 
 TOKEN_URL = "https://api.digikey.com/v1/oauth2/token"
 SEARCH_URL = "https://api.digikey.com/products/v4/search/keyword"
-DETAILS_URL = "https://api.digikey.com/products/v4/search/{mpn}/productdetails"
 
 _TOKEN_KEY = "digikey:access_token"
 
@@ -145,24 +144,27 @@ class DigiKeyProvider(PartProvider):
         return out[:limit]
 
     def get(self, mpn: str) -> dict[str, Any] | None:
+        """Resolve an MPN by keyword-searching and matching.
+
+        Digi-Key's `productdetails/{productNumber}` endpoint is strict —
+        it takes a Digi-Key part number, not always a plain MPN. For
+        common parts like `ESP32-WROOM-32E` it 404s because the catalog
+        only carries packaged variants (`ESP32-WROOM-32E-N4`, etc.). The
+        keyword search returns those variants reliably; we pick an exact
+        match if present, else the closest-matching variant.
+        """
         if not self.configured or not mpn:
             return None
-        token = self._token()
-        if not token:
+        results = self.search(mpn, limit=10)
+        if not results:
             return None
-        url = DETAILS_URL.format(mpn=httpx.QueryParams({"x": mpn})["x"])
-        try:
-            resp = httpx.get(
-                url, headers=self._headers(token), timeout=self._s.request_timeout_s
-            )
-            if resp.status_code == 404:
-                return None
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception:  # noqa: BLE001
-            return None
-        product = data.get("Product") or data
-        if not product:
-            return None
-        normalized = _normalize(product)
-        return normalized if normalized.get("mpn") else None
+        target = mpn.upper()
+        for r in results:
+            if (r.get("mpn") or "").upper() == target:
+                return r
+        target_compact = target.replace("-", "")
+        for r in results:
+            candidate = (r.get("mpn") or "").upper().replace("-", "")
+            if candidate.startswith(target_compact):
+                return r
+        return results[0]
