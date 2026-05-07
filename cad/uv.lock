@@ -130,6 +130,7 @@ name = "cassen-cad"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "build123d" },
     { name = "cascadio" },
     { name = "fastapi" },
     { name = "httpx" },
@@ -141,13 +142,12 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
-    { name = "build123d" },
     { name = "ruff" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "build123d", marker = "extra == 'dev'", specifier = ">=0.8" },
+    { name = "build123d", specifier = ">=0.8" },
     { name = "cascadio", specifier = ">=0.0.16" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.28" },

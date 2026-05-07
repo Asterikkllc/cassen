@@ -1,7 +1,7 @@
 [project]
 name = "cassen-cad"
 version = "0.1.0"
-description = "Cassen v1 CAD service. STEP -> GLB conversion via cascadio (Open Cascade)."
+description = "Cassen v1 CAD service. STEP -> GLB conversion + parametric primitives via build123d."
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115",
@@ -9,13 +9,13 @@ dependencies = [
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
     "cascadio>=0.0.16",
+    "build123d>=0.8",
     "python-multipart>=0.0.20",
     "httpx>=0.28",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "build123d>=0.8",
     "ruff>=0.7",
 ]
 

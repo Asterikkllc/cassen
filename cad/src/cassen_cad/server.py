@@ -1,7 +1,11 @@
-from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
+from typing import Any
+
+from fastapi import Body, Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, Response
+from pydantic import ValidationError
 
 from .convert import step_bytes_to_glb_bytes
+from .parametric import REGISTRY, shape_to_step_bytes
 from .settings import get_settings
 
 
@@ -53,6 +57,68 @@ async def convert_step_to_gltf(file: UploadFile = File(...)) -> Response:
         headers={
             "X-Cassen-Source-Bytes": str(len(data)),
             "X-Cassen-Output-Bytes": str(len(glb)),
+        },
+    )
+
+
+@app.get("/generate/parametric")
+async def list_parametric_templates() -> dict[str, Any]:
+    """Return every available parametric template with its input schema."""
+    return {
+        "templates": [
+            {
+                "name": s.name,
+                "description": s.description,
+                "input_schema": s.input_model.model_json_schema(),
+            }
+            for s in REGISTRY.values()
+        ]
+    }
+
+
+@app.post(
+    "/generate/parametric/{template_name}",
+    dependencies=[Depends(require_shared_secret)],
+    responses={
+        200: {"content": {"model/step": {}}},
+        404: {"description": "Unknown template"},
+        422: {"description": "Invalid inputs or build failure"},
+    },
+)
+async def generate_parametric(
+    template_name: str,
+    body: dict[str, Any] = Body(default_factory=dict),
+) -> Response:
+    spec = REGISTRY.get(template_name)
+    if not spec:
+        raise HTTPException(404, f"unknown template: {template_name}")
+
+    try:
+        inputs = spec.input_model(**body)
+    except ValidationError as exc:
+        # pydantic includes the original Exception in `ctx`, which isn't
+        # JSON-serializable. Strip context + url + input.
+        raise HTTPException(
+            422,
+            detail=exc.errors(
+                include_url=False,
+                include_context=False,
+                include_input=False,
+            ),
+        ) from exc
+
+    try:
+        shape = spec.build_fn(inputs)
+        step = shape_to_step_bytes(shape)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(422, f"build failed: {exc}") from exc
+
+    return Response(
+        content=step,
+        media_type="model/step",
+        headers={
+            "X-Cassen-Template": template_name,
+            "X-Cassen-Output-Bytes": str(len(step)),
         },
     )
 
