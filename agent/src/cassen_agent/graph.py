@@ -51,7 +51,10 @@ product. Decompose their request into:
 
 1. The product type (one phrase: e.g. "smart self-watering planter").
 2. The relevant knowledge domains from this fixed set: electronics, mechanical, fluids. \
-List which apply.
+List EVERY domain that applies — most projects span at least two. A smart planter \
+involves all three (sensors/MCU = electronics, enclosure/mounting = mechanical, \
+pump/tubing = fluids). A drone is electronics + mechanical. A PCB-only project is \
+electronics alone.
 3. The 5-7 highest-value design questions to answer next.
 
 Respond in compact JSON:
@@ -63,17 +66,48 @@ Respond in compact JSON:
 No prose outside the JSON.
 """
 
-DESIGNER_SYSTEM = """You are the Cassen designer. Given the planner's decomposition \
-and any researcher findings, produce a tight first-pass design sketch:
+DESIGNER_SYSTEM = """You are the Cassen designer. Synthesize the planner's \
+decomposition and the researchers' findings into ONE coherent first-pass design.
 
-- key components (3-8 items). When the researcher has already grounded electronic \
-parts in real MPNs, use those exact MPNs; for unresearched domains, use real \
-categories/types not SKUs.
-- one-line rationale for each
-- principal risks / unknowns
+Inputs you may receive (any subset):
+- Electronics research findings (real MPNs from Digi-Key/Mouser/Nexar).
+- Mechanical hardware selections (DIN/ISO/ANSI part IDs from the curated catalog).
+- Mechanical CAD selection (a parametric template + dimensions + STEP geometry).
+- Fluid-system selections (pumps/valves/tubing/fittings part IDs from the curated catalog).
 
-Plain markdown, no preamble. Do not invent MPNs that the researcher didn't \
-return.
+Your output, plain markdown, no preamble:
+
+## Components
+
+A flat list of every part the design needs, ordered by domain (electronics, then \
+mechanical hardware, then mechanical CAD geometry, then fluids). For each item:
+- The exact identifier the researcher returned (MPN for electronics, part_id for \
+  mechanical/fluids, template+inputs for CAD geometry). NEVER invent identifiers.
+- One-line rationale tied to the project's actual needs.
+
+## Cross-domain checks
+
+A short list of compatibility checks across domains: voltage rails match between \
+electronics and pumps/valves; enclosure dimensions accommodate the PCB and any \
+sensor/pump mounting; tubing OD/ID matches pump and valve ports; fastener sizes \
+match the CAD geometry's clearance holes.
+
+## Risks / unknowns
+
+3-5 bullets naming the genuine open questions: thermal headroom, sealing on \
+moisture, sourcing for any borderline parts, etc.
+
+End your turn with a compact JSON summary on a NEW LINE:
+{
+  "bom": [
+    { "domain": "electronics|mechanical|cad|fluids", "id": "...", "function": "...", "rationale": "..." },
+    ...
+  ]
+}
+
+The BoM is the persisted artifact downstream consumers (UI, sourcing agent, \
+firmware agent) read. Every research-grounded part MUST appear; do not silently \
+drop any.
 """
 
 FLUIDS_RESEARCH_SYSTEM = """You are the Cassen fluids researcher.
@@ -256,6 +290,101 @@ def _extract_trailing_json(text: str) -> dict | None:
     except Exception:  # noqa: BLE001
         return None
     return parsed if isinstance(parsed, dict) else None
+
+
+def _extract_bom(text: str) -> list[dict[str, Any]]:
+    """Pull the designer's `bom` JSON list from its trailing summary.
+
+    Returns [] when no parseable block is present — caller falls back
+    to deriving a BoM from the research outputs directly.
+    """
+    parsed = _extract_trailing_json(text)
+    if not parsed:
+        return []
+    raw = parsed.get("bom")
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for row in raw:
+        if not isinstance(row, dict) or not row.get("id"):
+            continue
+        out.append(
+            {
+                "domain": str(row.get("domain", "")),
+                "id": str(row.get("id", "")),
+                "function": str(row.get("function", "")),
+                "rationale": str(row.get("rationale", "")),
+            }
+        )
+    return out
+
+
+def _bom_from_research(research_outputs: dict[str, Any]) -> list[dict[str, Any]]:
+    """Deterministic fallback BoM built straight from research_outputs.
+
+    Used when the designer's trailing JSON is missing/malformed, or as
+    the truth source the smoke can verify regardless of LLM behavior.
+    Order: electronics, mechanical hardware, CAD geometry, fluids.
+    """
+    out: list[dict[str, Any]] = []
+
+    elec = research_outputs.get("electronics") or {}
+    for p in elec.get("candidate_parts") or []:
+        if not isinstance(p, dict) or not p.get("mpn"):
+            continue
+        out.append(
+            {
+                "domain": "electronics",
+                "id": str(p.get("mpn")),
+                "function": str(p.get("function", "")),
+                "rationale": str(p.get("rationale", "")),
+            }
+        )
+
+    mech_hw = research_outputs.get("mechanical_research") or {}
+    for p in mech_hw.get("picks") or []:
+        if not isinstance(p, dict) or not p.get("part_id"):
+            continue
+        out.append(
+            {
+                "domain": "mechanical",
+                "id": str(p.get("part_id")),
+                "function": str(p.get("function", "")),
+                "rationale": str(p.get("rationale", "")),
+            }
+        )
+
+    cad = research_outputs.get("mechanical") or {}
+    pick = cad.get("pick") if isinstance(cad, dict) else None
+    if isinstance(pick, dict) and (pick.get("template") or pick.get("from_script")):
+        cad_id = (
+            f"build123d-script:{cad.get('step_b64','')[:8]}"
+            if pick.get("from_script")
+            else str(pick.get("template"))
+        )
+        out.append(
+            {
+                "domain": "cad",
+                "id": cad_id,
+                "function": "mechanical geometry (STEP produced)",
+                "rationale": str(pick.get("rationale", "")),
+            }
+        )
+
+    fluids = research_outputs.get("fluids") or {}
+    for p in fluids.get("picks") or []:
+        if not isinstance(p, dict) or not p.get("part_id"):
+            continue
+        out.append(
+            {
+                "domain": "fluids",
+                "id": str(p.get("part_id")),
+                "function": str(p.get("function", "")),
+                "rationale": str(p.get("rationale", "")),
+            }
+        )
+
+    return out
 
 
 def _extract_fluid_picks(text: str) -> list[dict[str, Any]]:
@@ -1112,19 +1241,36 @@ async def run_graph(input: GraphInput) -> AsyncIterator[GraphEvent]:
                     mech.pop("step_b64", None)
                     research_for_snapshot["mechanical"] = mech
 
+                # Cross-domain BoM. Prefer the designer's JSON block;
+                # fall back to deterministic derivation from research
+                # outputs so downstream consumers (sourcing agent,
+                # firmware agent, UI) always have a unified list.
+                designer_bom = _extract_bom("".join(design_text_parts))
+                fallback_bom = _bom_from_research(research_for_snapshot)
+                bom = designer_bom or fallback_bom
+                bom_source = (
+                    "designer_json" if designer_bom else "research_fallback"
+                )
+
                 snapshot = {
-                    "phase": 8,
+                    "phase": 12,
                     "planner_output": "".join(plan_text_parts),
                     "planner_parsed": plan_parsed,
                     "domains": sorted(domains),
                     "research": research_for_snapshot,
                     "designer_output": "".join(design_text_parts),
+                    "bom": bom,
+                    "bom_source": bom_source,
                 }
                 append_version_snapshot(
                     project_id=input.project_id,
                     snapshot=snapshot,
                     created_by=input.owner_id,
-                    note="Phase 8c run",
+                    note="Phase 12 cross-domain run",
+                )
+                yield GraphEvent(
+                    kind="bom",
+                    data={"bom": bom, "source": bom_source, "count": len(bom)},
                 )
                 update_project_status(input.project_id, "draft")
                 yield GraphEvent(kind="complete", data={"status": "draft"})
