@@ -6,6 +6,7 @@ from pydantic import ValidationError
 
 from .convert import step_bytes_to_glb_bytes
 from .parametric import REGISTRY, shape_to_step_bytes
+from .rodin import RodinError, generate_rodin
 from .sandbox import (
     SandboxRunError,
     SandboxValidationError,
@@ -171,6 +172,80 @@ async def generate_from_script(body: dict[str, Any] = Body(default_factory=dict)
         headers={
             "X-Cassen-Output-Bytes": str(len(result.step_bytes)),
             "X-Cassen-Duration-Ms": f"{result.duration_s * 1000:.0f}",
+        },
+    )
+
+
+_RODIN_FORMAT_MEDIA_TYPES: dict[str, str] = {
+    "glb": "model/gltf-binary",
+    "fbx": "application/octet-stream",
+    "obj": "model/obj",
+    "stl": "model/stl",
+    "step": "model/step",
+    "usdz": "model/vnd.usdz+zip",
+}
+
+
+@app.post(
+    "/generate/rodin",
+    dependencies=[Depends(require_shared_secret)],
+    responses={
+        200: {"description": "Generated model bytes"},
+        400: {"description": "Invalid prompt or option"},
+        413: {"description": "Output exceeded MAX_RODIN_OUTPUT_BYTES"},
+        502: {"description": "Hyper3D upstream error"},
+        503: {"description": "HYPER3D_API_KEY not configured"},
+        504: {"description": "Generation exceeded HYPER3D_MAX_WAIT_S"},
+    },
+)
+async def generate_rodin_endpoint(body: dict[str, Any] = Body(default_factory=dict)) -> Response:
+    """PRD section 5.2 tier 3 — generative geometry via Hyper3D Rodin Gen-2.
+
+    Body: {prompt, geometry_format?, tier?, quality?, material?, bbox_mm?}.
+    Returns the produced model file inline. Default format = glb (browser
+    renderable). Generation is synchronous and can take 30s-10min.
+    """
+    prompt = (body.get("prompt") or "").strip()
+    if not prompt:
+        raise HTTPException(400, "missing 'prompt' string in body")
+    if len(prompt) > 4000:
+        raise HTTPException(400, "prompt exceeds 4000 characters")
+
+    geometry_format = str(body.get("geometry_format") or "glb").lower()
+    tier = str(body.get("tier") or "Regular")
+    quality = str(body.get("quality") or "medium")
+    material = str(body.get("material") or "PBR")
+
+    bbox_raw = body.get("bbox_mm")
+    bbox_mm: tuple[float, float, float] | None = None
+    if bbox_raw is not None:
+        try:
+            x, y, z = bbox_raw
+            bbox_mm = (float(x), float(y), float(z))
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(400, "bbox_mm must be a 3-element [x,y,z] list") from exc
+
+    try:
+        result = generate_rodin(
+            prompt=prompt,
+            geometry_format=geometry_format,
+            tier=tier,
+            quality=quality,
+            material=material,
+            bbox_mm=bbox_mm,
+        )
+    except RodinError as exc:
+        raise HTTPException(exc.status, str(exc)) from exc
+
+    media_type = _RODIN_FORMAT_MEDIA_TYPES.get(geometry_format, "application/octet-stream")
+    return Response(
+        content=result.bytes_,
+        media_type=media_type,
+        headers={
+            "X-Cassen-Output-Bytes": str(len(result.bytes_)),
+            "X-Cassen-Duration-Ms": f"{result.duration_s * 1000:.0f}",
+            "X-Cassen-Rodin-Task": result.task_uuid,
+            "X-Cassen-Rodin-File": result.file_name,
         },
     )
 

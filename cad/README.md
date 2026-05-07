@@ -30,6 +30,7 @@ uv run uvicorn cassen_cad.server:app --host 127.0.0.1 --port 8002
 | GET    | `/generate/parametric`                        | none          | list of templates + each template's input JSON Schema |
 | POST   | `/generate/parametric/{name}`                 | Bearer secret | JSON body of inputs, returns `model/step` |
 | POST   | `/generate/script`                            | Bearer secret | Sandboxed build123d script -> `model/step` |
+| POST   | `/generate/rodin`                             | Bearer secret | Hyper3D Rodin Gen-2 generative geometry (PRD tier 3) |
 
 `/convert/step-to-gltf` rejects non-`.step` / `.stp` filenames (415),
 files larger than `MAX_STEP_BYTES` (413, default 50 MB), and conversion
@@ -94,6 +95,47 @@ Status codes: 400 (AST rejection / missing code), 413 (>64 KB source),
 
 The sandbox is defence-in-depth, not a container. A later phase may
 move execution to Modal sandboxes; the AST gate stays in front of that.
+
+## Generative tier 3: Hyper3D Rodin (Phase 10)
+
+`POST /generate/rodin` is PRD section 5.2's tier-3 generative path —
+organic / aesthetic / novel shapes that parametric and curated tiers
+can't produce. Implementation wraps Hyper3D Rodin Gen-2:
+
+  1. submit job to `/api/v2/rodin`
+  2. poll `/api/v2/status` until every job is `Done`
+  3. fetch download URLs from `/api/v2/download` and GET the file
+
+All three are collapsed behind one sync request. Set
+`HYPER3D_API_KEY` in `.env`; without one the route returns 503.
+
+```json
+{
+  "prompt": "stylized planter pot with hexagonal facets",
+  "geometry_format": "glb",
+  "tier": "Regular",
+  "quality": "medium",
+  "material": "PBR",
+  "bbox_mm": [120, 120, 100]
+}
+```
+
+`tier` ∈ {Sketch, Regular, Detail, Smooth}, `quality` ∈ {extra-low,
+low, medium, high}, `geometry_format` ∈ {glb, fbx, obj, stl, step,
+usdz}. Default is glb at medium quality — browser-renderable.
+
+Generation is **synchronous** at the HTTP layer (cad/ holds the
+connection while polling Hyper3D). It can take 30 s to ~10 min.
+`HYPER3D_MAX_WAIT_S` (default 600) is the ceiling; past that, 504.
+
+Status codes: 400 (bad input), 413 (oversized output), 502
+(upstream Hyper3D error), 503 (no API key configured), 504
+(timeout).
+
+PRD constraint: **Generative output is visualization-only.**
+Manufacturable parts route through tier 1 (curated, mcp-electronics
++ mcp-mechanical) or tier 2 (build123d, /generate/parametric +
+/generate/script).
 
 ## Caller pattern
 

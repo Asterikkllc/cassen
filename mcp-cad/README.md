@@ -9,11 +9,12 @@ Sibling of `agent/`, `app/`, `cad/`, `mcp-electronics/`,
 
 ## Tools
 
-| name                          | params                            | what it does |
-|-------------------------------|-----------------------------------|--------------|
-| `list_parametric_templates`   | —                                 | enumerate cad/'s templates with their JSON Schemas |
-| `generate_part`               | `template`, `inputs`              | build a parametric template -> base64 STEP |
-| `generate_from_script`        | `code`, `timeout_s?`              | run agent-authored build123d script in cad/'s sandbox -> base64 STEP |
+| name                          | params                                            | what it does |
+|-------------------------------|---------------------------------------------------|--------------|
+| `list_parametric_templates`   | —                                                 | enumerate cad/'s templates with their JSON Schemas |
+| `generate_part`               | `template`, `inputs`                              | build a parametric template -> base64 STEP |
+| `generate_from_script`        | `code`, `timeout_s?`                              | run agent-authored build123d script in cad/'s sandbox -> base64 STEP |
+| `generate_organic`            | `prompt`, `geometry_format?`, `tier?`, ...        | Hyper3D Rodin Gen-2 generative tier 3 (PRD section 5.2) — organic / aesthetic shapes -> base64 model |
 
 All three speak HTTP to cad/ at `CAD_BASE_URL`. STEP bytes are
 returned base64-encoded as `step_b64` because MCP tool responses are

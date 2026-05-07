@@ -91,6 +91,55 @@ def generate_from_script(code: str, timeout_s: float | None = None) -> dict[str,
     }
 
 
+def generate_rodin(
+    *,
+    prompt: str,
+    geometry_format: str = "glb",
+    tier: str = "Regular",
+    quality: str = "medium",
+    material: str = "PBR",
+    bbox_mm: list[float] | None = None,
+) -> dict[str, Any]:
+    """Call cad/'s POST /generate/rodin. Long-poll friendly: timeout
+    is overridden to honor cad/'s own HYPER3D_MAX_WAIT_S ceiling.
+    """
+    s = get_settings()
+    body: dict[str, Any] = {
+        "prompt": prompt,
+        "geometry_format": geometry_format,
+        "tier": tier,
+        "quality": quality,
+        "material": material,
+    }
+    if bbox_mm is not None:
+        body["bbox_mm"] = bbox_mm
+
+    # Rodin generation can take minutes; lift the per-call timeout to
+    # 700s so we sit in the connection while cad/ polls upstream.
+    with httpx.Client(timeout=max(s.request_timeout_s, 700.0)) as client:
+        r = client.post(
+            f"{s.cad_base_url}/generate/rodin",
+            headers=_headers(),
+            json=body,
+        )
+    if r.status_code in {400, 413, 502, 503, 504}:
+        return {
+            "error": f"rodin failed: HTTP {r.status_code}",
+            "status": r.status_code,
+            "detail": _safe_json_or_text(r),
+        }
+    r.raise_for_status()
+    data = r.content
+    return {
+        "size_bytes": len(data),
+        "format": geometry_format,
+        "task_uuid": r.headers.get("X-Cassen-Rodin-Task", ""),
+        "file_name": r.headers.get("X-Cassen-Rodin-File", ""),
+        "duration_ms": int(r.headers.get("X-Cassen-Duration-Ms", "0") or 0),
+        "model_b64": base64.b64encode(data).decode("ascii"),
+    }
+
+
 def _safe_json_or_text(r: httpx.Response) -> Any:
     try:
         return r.json()

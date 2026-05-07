@@ -80,6 +80,55 @@ def generate_from_script(code: str, timeout_s: float | None = None) -> dict[str,
     return client.generate_from_script(code, timeout_s=timeout_s)
 
 
+@server.tool()
+def generate_organic(
+    prompt: str,
+    geometry_format: str = "glb",
+    tier: str = "Regular",
+    quality: str = "medium",
+    material: str = "PBR",
+    bbox_mm: list[float] | None = None,
+) -> dict[str, Any]:
+    """Generate an organic / aesthetic 3D shape via Hyper3D Rodin Gen-2.
+
+    Use this for shapes that the parametric layer (`generate_part`) and
+    the script layer (`generate_from_script`) can't produce: stylized
+    enclosures, organic forms, characters, props, plant-like geometry,
+    sculpted surfaces. Output is visualization-grade — PRD says
+    manufacturable parts MUST route through tier 1 (curated) or tier 2
+    (build123d), not this tool.
+
+    Args:
+      prompt: text description of the shape (required).
+      geometry_format: "glb" (default, browser-ready), or "obj"/"stl"/
+        "fbx"/"step"/"usdz".
+      tier: "Sketch" (fastest) | "Regular" (default) | "Detail" |
+        "Smooth".
+      quality: "extra-low" | "low" | "medium" (default) | "high".
+      material: "PBR" (default) | "Shaded".
+      bbox_mm: optional [x, y, z] to bias the bounding box in mm.
+
+    Generation is synchronous and can take 30 seconds to several
+    minutes. cad/'s wall-clock ceiling is HYPER3D_MAX_WAIT_S
+    (default 600 s).
+
+    Returns `{size_bytes, format, task_uuid, file_name, duration_ms,
+    model_b64}` on success or `{error, status, detail?}` for missing
+    API key (503), bad prompt/option (400), upstream Hyper3D error
+    (502), oversized output (413), or wall-clock timeout (504).
+    """
+    if not isinstance(prompt, str) or not prompt.strip():
+        return {"error": "`prompt` must be a non-empty string", "status": 400}
+    return client.generate_rodin(
+        prompt=prompt,
+        geometry_format=geometry_format,
+        tier=tier,
+        quality=quality,
+        material=material,
+        bbox_mm=bbox_mm,
+    )
+
+
 def main() -> None:
     server.run()
 
