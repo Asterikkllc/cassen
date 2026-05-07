@@ -107,6 +107,39 @@ export async function getMyProject(projectId: string): Promise<Project | null> {
   return (data as Project) ?? null;
 }
 
+export type ProjectSnapshot = {
+  id: string;
+  project_id: string;
+  snapshot: Record<string, unknown>;
+  created_at: string;
+  note: string | null;
+};
+
+export async function getLatestSnapshot(
+  projectId: string,
+): Promise<ProjectSnapshot | null> {
+  const { userId } = await auth();
+  if (!userId) return null;
+
+  const project = await getMyProject(projectId);
+  if (!project) return null;
+
+  const admin = getSupabaseAdmin();
+  const { data, error } = await admin
+    .from("project_versions")
+    .select("id, project_id, snapshot, created_at, note")
+    .eq("project_id", projectId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    console.error("[projects:snapshot] supabase error", error);
+    return null;
+  }
+  return (data as ProjectSnapshot) ?? null;
+}
+
 export type DeleteProjectResult =
   | { ok: true }
   | { ok: false; error: string };

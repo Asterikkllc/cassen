@@ -4,17 +4,21 @@ import { ArrowLeft, Trash2 } from "lucide-react";
 import { auth } from "@clerk/nextjs/server";
 import { SiteHeader } from "@/components/site-header";
 import { AgentRun } from "@/components/agent-run";
+import { ProjectViewerLazy } from "@/components/project-viewer-lazy";
 import { Button } from "@/components/ui/button";
 import {
   deleteProjectFromForm,
+  getLatestSnapshot,
   getMyProject,
 } from "@/app/actions/projects";
+import type { CandidatePart } from "@/components/project-viewer";
 
 export const dynamic = "force-dynamic";
 
 const STATUS_LABEL: Record<string, string> = {
   draft: "Draft",
   planning: "Planning",
+  researching: "Researching",
   designing: "Designing",
   simulating: "Simulating",
   sourcing: "Sourcing",
@@ -33,6 +37,24 @@ export async function generateMetadata({ params }: { params: Params }) {
   return { title: project?.title ?? "Project" };
 }
 
+function extractCandidateParts(
+  snapshot: Record<string, unknown> | undefined,
+): CandidatePart[] {
+  if (!snapshot) return [];
+  const research = (snapshot.research as Record<string, unknown> | undefined) ?? {};
+  const electronics = (research.electronics as Record<string, unknown> | undefined) ?? {};
+  const raw = electronics.candidate_parts;
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((p): p is Record<string, unknown> => p !== null && typeof p === "object")
+    .map((p) => ({
+      function: typeof p.function === "string" ? p.function : undefined,
+      mpn: typeof p.mpn === "string" ? p.mpn : undefined,
+      rationale: typeof p.rationale === "string" ? p.rationale : undefined,
+    }))
+    .filter((p) => p.mpn);
+}
+
 export default async function ProjectDetailPage({
   params,
 }: {
@@ -42,6 +64,9 @@ export default async function ProjectDetailPage({
   const { id } = await params;
   const project = await getMyProject(id);
   if (!project) notFound();
+
+  const snapshot = await getLatestSnapshot(project.id);
+  const candidateParts = extractCandidateParts(snapshot?.snapshot);
 
   return (
     <>
@@ -85,6 +110,20 @@ export default async function ProjectDetailPage({
           <div className="mt-4">
             <AgentRun projectId={project.id} />
           </div>
+        </section>
+
+        <section className="mt-6">
+          <div className="mb-3 flex items-center justify-between">
+            <p className="text-xs font-medium uppercase tracking-wider text-neutral-500">
+              3D Viewer
+            </p>
+            {candidateParts.length > 0 ? (
+              <p className="text-xs text-neutral-600">
+                Placeholder geometry — real STEP→GLTF lands in Phase 7b
+              </p>
+            ) : null}
+          </div>
+          <ProjectViewerLazy candidateParts={candidateParts} />
         </section>
 
         <section className="mt-10 flex items-center justify-between gap-3 border-t border-neutral-900 pt-6 text-xs text-neutral-500">
