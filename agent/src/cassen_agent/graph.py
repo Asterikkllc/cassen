@@ -76,6 +76,43 @@ Plain markdown, no preamble. Do not invent MPNs that the researcher didn't \
 return.
 """
 
+FLUIDS_RESEARCH_SYSTEM = """You are the Cassen fluids researcher.
+
+Your job is to ground the project's fluid-system decisions (pumps, \
+valves, tubing, fittings) in real, sourceable parts. Tools:
+- list_categories: see what kinds of parts the catalog covers \
+  (pump, valve, tubing, fitting).
+- search_part(query, category?, limit?): substring search by spec \
+  ('R385', '12V solenoid'), description, or use case ('aquarium', \
+  'irrigation', 'pneumatic').
+- get_part(part_id): full record for one id (e.g. 'pump-r385-12v-water').
+- recommend_for_function(function, context?): keyword heuristic — \
+  useful for noun phrases like 'water a planter on a 12V line' or \
+  'shut off air supply on power loss'.
+
+Process:
+1. Identify the project's fluid needs (move water? dispense precisely? \
+   actuate pneumatic cylinders? shut off on power loss?).
+2. For each need, call recommend_for_function or search_part to find \
+   candidates, then get_part for the chosen id.
+3. Pay attention to compatibility: pump port (1/2 BSP, 6 mm barb) must \
+   match the tubing OD/ID and the fittings; voltage must match the \
+   project's power rail; max_pressure must exceed expected head.
+4. End your turn with a compact JSON summary:
+   {
+     "fluid_picks": [
+       { "function": "move water from reservoir to soil", "part_id": "...", "rationale": "..." },
+       ...
+     ]
+   }
+   No prose after the JSON.
+
+Three to six tool calls is typical. Don't pick more parts than the \
+project actually needs. Don't invent part IDs — only return ones a \
+tool returned to you.
+"""
+
+
 MECHANICAL_RESEARCH_SYSTEM = """You are the Cassen mechanical researcher.
 
 Your job is to ground the project's structural / hardware decisions in \
@@ -219,6 +256,27 @@ def _extract_trailing_json(text: str) -> dict | None:
     except Exception:  # noqa: BLE001
         return None
     return parsed if isinstance(parsed, dict) else None
+
+
+def _extract_fluid_picks(text: str) -> list[dict[str, Any]]:
+    """Pull `fluid_picks` JSON list from the researcher's free-form output."""
+    parsed = _extract_trailing_json(text)
+    if not parsed:
+        return []
+    raw = parsed.get("fluid_picks")
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for p in raw:
+        if isinstance(p, dict) and p.get("part_id"):
+            out.append(
+                {
+                    "function": str(p.get("function", "")),
+                    "part_id": str(p.get("part_id", "")),
+                    "rationale": str(p.get("rationale", "")),
+                }
+            )
+    return out
 
 
 def _extract_mechanical_picks(text: str) -> list[dict[str, Any]]:
@@ -845,6 +903,122 @@ async def run_graph(input: GraphInput) -> AsyncIterator[GraphEvent]:
                                 "calls": [_redact_step_b64(c) for c in mech_calls],
                             }
 
+                # ---- fluids research (conditional) -----------------------
+                if "fluids" in domains and settings.mcp_fluids_path:
+                    update_project_status(input.project_id, "researching-fluids")
+                    yield GraphEvent(
+                        kind="status", data={"status": "researching-fluids"}
+                    )
+                    yield GraphEvent(kind="node-start", node="fluids_research")
+
+                    fluids_user = (
+                        "Project request:\n"
+                        f"{input.prompt}\n\n"
+                        f"Planner decomposition (JSON):\n{''.join(plan_text_parts)}\n"
+                    )
+                    fluids_calls: list[dict[str, Any]] = []
+                    fluids_text_parts: list[str] = []
+
+                    with _maybe_span(
+                        langfuse,
+                        name="fluids_research",
+                        as_type="generation",
+                        input={"prompt": input.prompt},
+                        model=settings.research_model,
+                        model_parameters={
+                            "max_tokens": settings.research_max_tokens,
+                            "max_iterations": settings.research_max_iterations,
+                        },
+                    ) as fluids_span:
+                        try:
+                            async with mcp_session(
+                                command=settings.uv_command,
+                                args=[
+                                    "run",
+                                    "--project",
+                                    settings.mcp_fluids_path,
+                                    "python",
+                                    "-m",
+                                    "cassen_fluids.server",
+                                ],
+                            ) as session:
+                                async for event_kind, payload in run_tool_using_loop(
+                                    client=client,
+                                    session=session,
+                                    system=FLUIDS_RESEARCH_SYSTEM,
+                                    user_prompt=fluids_user,
+                                    model=settings.research_model,
+                                    max_tokens=settings.research_max_tokens,
+                                    max_iterations=settings.research_max_iterations,
+                                ):
+                                    if event_kind == "iteration":
+                                        yield GraphEvent(
+                                            kind="iteration",
+                                            node="fluids_research",
+                                            data=payload,
+                                        )
+                                    elif event_kind == "assistant-text":
+                                        fluids_text_parts.append(payload["text"])
+                                        yield GraphEvent(
+                                            kind="token",
+                                            node="fluids_research",
+                                            data=payload["text"],
+                                        )
+                                    elif event_kind == "tool-call-start":
+                                        yield GraphEvent(
+                                            kind="tool-call-start",
+                                            node="fluids_research",
+                                            data=payload,
+                                        )
+                                    elif event_kind == "tool-call-end":
+                                        fluids_calls.append(payload)
+                                        yield GraphEvent(
+                                            kind="tool-call-end",
+                                            node="fluids_research",
+                                            data=payload,
+                                        )
+                                    elif event_kind == "tool-error":
+                                        yield GraphEvent(
+                                            kind="tool-error",
+                                            node="fluids_research",
+                                            data=payload,
+                                        )
+                                    elif event_kind == "done":
+                                        final_text = payload.get("final_text", "")
+                                        picks = _extract_fluid_picks(final_text)
+                                        research_outputs["fluids"] = {
+                                            "final_text": final_text,
+                                            "picks": picks,
+                                            "calls": fluids_calls,
+                                            "stop_reason": payload.get("stop_reason"),
+                                        }
+                                        yield GraphEvent(
+                                            kind="node-end",
+                                            node="fluids_research",
+                                            data={
+                                                "text": final_text,
+                                                "picks": picks,
+                                                "calls_made": len(fluids_calls),
+                                            },
+                                        )
+                                        if fluids_span is not None:
+                                            fluids_span.update(
+                                                output={
+                                                    "picks": picks,
+                                                    "calls_made": len(fluids_calls),
+                                                },
+                                            )
+                        except Exception as exc:  # noqa: BLE001
+                            yield GraphEvent(
+                                kind="tool-error",
+                                node="fluids_research",
+                                data={"error": str(exc)},
+                            )
+                            research_outputs["fluids"] = {
+                                "error": str(exc),
+                                "calls": fluids_calls,
+                            }
+
                 # ---- designer ---------------------------------------------
                 update_project_status(input.project_id, "designing")
                 yield GraphEvent(kind="status", data={"status": "designing"})
@@ -862,6 +1036,15 @@ async def run_graph(input: GraphInput) -> AsyncIterator[GraphEvent]:
                 if mechanical_hw and mechanical_hw.get("picks"):
                     research_block += "\nMechanical hardware selections (curated catalog):\n"
                     for p in mechanical_hw["picks"]:
+                        research_block += (
+                            f"- {p.get('part_id')}: {p.get('function')}"
+                            f" — {p.get('rationale','')}\n"
+                        )
+
+                fluids_research = research_outputs.get("fluids")
+                if fluids_research and fluids_research.get("picks"):
+                    research_block += "\nFluid-system selections (curated catalog):\n"
+                    for p in fluids_research["picks"]:
                         research_block += (
                             f"- {p.get('part_id')}: {p.get('function')}"
                             f" — {p.get('rationale','')}\n"
