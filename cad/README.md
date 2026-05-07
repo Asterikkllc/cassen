@@ -29,6 +29,7 @@ uv run uvicorn cassen_cad.server:app --host 127.0.0.1 --port 8002
 | POST   | `/convert/step-to-gltf`                       | Bearer secret | multipart `file=...` STEP/STP, returns `model/gltf-binary` (.glb) |
 | GET    | `/generate/parametric`                        | none          | list of templates + each template's input JSON Schema |
 | POST   | `/generate/parametric/{name}`                 | Bearer secret | JSON body of inputs, returns `model/step` |
+| POST   | `/generate/script`                            | Bearer secret | Sandboxed build123d script -> `model/step` |
 
 `/convert/step-to-gltf` rejects non-`.step` / `.stp` filenames (415),
 files larger than `MAX_STEP_BYTES` (413, default 50 MB), and conversion
@@ -62,6 +63,38 @@ To add a template:
 The endpoint reflects on the registry, so `GET /generate/parametric`
 auto-discovers new templates.
 
+## Sandboxed script execution (Phase 8b)
+
+`POST /generate/script` lets the agent author a build123d Python script
+on the fly and have cad/ execute it under a two-layer sandbox:
+
+1. **AST allowlist** — only `import build123d` and `import math` are
+   accepted. Any reference to `os`, `socket`, `subprocess`, `eval`,
+   `exec`, `__import__`, `open`, dunder attribute escapes (`.__class__`,
+   `.__bases__`, `.__subclasses__`) etc. is rejected at parse time with
+   HTTP 400.
+2. **Subprocess isolation** — validated code runs in a fresh
+   `python -I -B` process with a pruned environment, no shared state,
+   a wall-clock timeout (default 30s, max 60s), and on POSIX,
+   `RLIMIT_CPU` + `RLIMIT_AS` (512 MB).
+
+The script must assign a build123d shape to a top-level `result`
+variable. The runner appends the export footer:
+
+```python
+# body example
+{
+  "code": "from build123d import Box, Cylinder\nresult = Box(40, 30, 10) - Cylinder(5, 20)",
+  "timeout_s": 30
+}
+```
+
+Status codes: 400 (AST rejection / missing code), 413 (>64 KB source),
+422 (script ran but produced no STEP), 504 (wall-clock timeout).
+
+The sandbox is defence-in-depth, not a container. A later phase may
+move execution to Modal sandboxes; the AST gate stays in front of that.
+
 ## Caller pattern
 
 ```python
@@ -78,9 +111,7 @@ glb_bytes = resp.content
 
 ## What's NOT here yet (later phases)
 
-- **Phase 7c** swaps the in-browser Canvas to WebGPU + adds postprocessing.
-- **Phase 8** (Build123d parametric CAD) will produce STEP files the
-  agent can route through this endpoint and stash the resulting GLB
-  on Supabase Storage / Cloudflare R2 with a signed URL.
-- Caching: a content-hash → GLB map so repeat conversions are free.
+- **Phase 8c** wraps these endpoints as MCP tools (mcp-cad/) so the
+  agent can call them as first-class tools alongside electronics.
+- Caching: a content-hash -> GLB map so repeat conversions are free.
 - Streaming uploads / chunked responses for very large assemblies.

@@ -6,6 +6,11 @@ from pydantic import ValidationError
 
 from .convert import step_bytes_to_glb_bytes
 from .parametric import REGISTRY, shape_to_step_bytes
+from .sandbox import (
+    SandboxRunError,
+    SandboxValidationError,
+    run_script,
+)
 from .settings import get_settings
 
 
@@ -119,6 +124,53 @@ async def generate_parametric(
         headers={
             "X-Cassen-Template": template_name,
             "X-Cassen-Output-Bytes": str(len(step)),
+        },
+    )
+
+
+@app.post(
+    "/generate/script",
+    dependencies=[Depends(require_shared_secret)],
+    responses={
+        200: {"content": {"model/step": {}}},
+        400: {"description": "Script rejected by AST allowlist"},
+        413: {"description": "Script source exceeds size limit"},
+        422: {"description": "Script ran but failed to produce STEP"},
+        504: {"description": "Script exceeded wall-clock timeout"},
+    },
+)
+async def generate_from_script(body: dict[str, Any] = Body(default_factory=dict)) -> Response:
+    """Run an agent-authored build123d script in a sandbox and return STEP.
+
+    Body: {"code": "...", "timeout_s"?: float}. The script must assign a
+    build123d shape to a top-level `result` variable; the sandbox appends
+    the export footer.
+    """
+    code = body.get("code")
+    if not isinstance(code, str) or not code.strip():
+        raise HTTPException(400, "missing 'code' string in body")
+    if len(code) > 64 * 1024:
+        raise HTTPException(413, "script exceeds 64 KB limit")
+
+    # build123d's cold-import on Windows is ~10-15s, so default 30s
+    timeout_s = float(body.get("timeout_s") or 30.0)
+    timeout_s = max(5.0, min(timeout_s, 60.0))
+
+    try:
+        result = run_script(code, timeout_s=timeout_s)
+    except SandboxValidationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except SandboxRunError as exc:
+        msg = str(exc)
+        status = 504 if "timeout" in msg.lower() else 422
+        raise HTTPException(status, msg) from exc
+
+    return Response(
+        content=result.step_bytes,
+        media_type="model/step",
+        headers={
+            "X-Cassen-Output-Bytes": str(len(result.step_bytes)),
+            "X-Cassen-Duration-Ms": f"{result.duration_s * 1000:.0f}",
         },
     )
 
