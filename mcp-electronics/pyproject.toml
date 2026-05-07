@@ -5,6 +5,8 @@ description = "Cassen v1 electronics knowledge pack — MCP server exposing part
 requires-python = ">=3.12"
 dependencies = [
     "mcp>=1.2",
+    "httpx>=0.28",
+    "pydantic-settings>=2.6",
 ]
 
 [project.scripts]

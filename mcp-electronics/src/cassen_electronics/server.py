@@ -1,66 +1,36 @@
 """Cassen v1 — electronics knowledge pack MCP server.
 
-Tools exposed:
-- list_categories()       -> all curated part categories
-- search_part(query, ...) -> fuzzy match across mpn/manufacturer/description/tags
-- get_part(mpn)           -> full record for a single MPN
-- recommend_alternative(mpn, reason?) -> functionally-similar parts
+Tools exposed (stable contract — see Aggregator for the data layer):
+- list_categories()       -> categories + provider list + curated count
+- search_part(query, ...) -> Nexar -> Mouser -> curated, normalized rows
+- get_part(mpn)           -> Nexar -> Digi-Key -> Mouser -> curated
+- recommend_alternative(mpn, reason?) -> curated alternatives list
 
-Backed by data/parts.json today. Phase 6c will swap the data layer for
-live Digi-Key + Mouser + Nexar fetches against the same tool surface.
+All four were Phase 6a; Phase 6c added the live distributor providers
+behind the same surface.
 """
 
 from __future__ import annotations
 
-import json
-from importlib.resources import files
-from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-
-def _load_dataset() -> dict[str, Any]:
-    candidates: list[Path] = []
-    try:
-        pkg_root = files("cassen_electronics")
-        candidates.append(Path(str(pkg_root)) / "data" / "parts.json")
-    except (ModuleNotFoundError, FileNotFoundError):
-        pass
-    here = Path(__file__).resolve()
-    candidates.extend(
-        [
-            here.parent / "data" / "parts.json",
-            here.parent.parent.parent / "data" / "parts.json",
-        ]
-    )
-    for c in candidates:
-        if c.exists():
-            return json.loads(c.read_text(encoding="utf-8"))
-    raise FileNotFoundError(
-        "parts.json not found. Looked in: " + ", ".join(str(c) for c in candidates)
-    )
-
-
-_DATASET = _load_dataset()
-_PARTS: list[dict[str, Any]] = _DATASET["parts"]
-_BY_MPN: dict[str, dict[str, Any]] = {p["mpn"]: p for p in _PARTS}
+from .aggregator import get_aggregator
 
 server = FastMCP("cassen-electronics")
 
 
 @server.tool()
 def list_categories() -> dict[str, Any]:
-    """List the available part categories in this knowledge pack.
+    """List the available part categories in this knowledge pack and the
+    set of configured live-data providers (Nexar, Mouser, Digi-Key, curated).
 
-    Use this when the agent wants to discover what kinds of components
-    can be searched.
+    Categories are the curated taxonomy; live providers each carry their
+    own taxonomy. Use list_categories() to learn what's available; use
+    search_part() to query.
     """
-    return {
-        "categories": _DATASET.get("categories", []),
-        "total_parts": len(_PARTS),
-        "schema_version": _DATASET.get("schema_version"),
-    }
+    return get_aggregator().list_categories()
 
 
 @server.tool()
@@ -69,101 +39,43 @@ def search_part(
     category: str | None = None,
     limit: int = 10,
 ) -> dict[str, Any]:
-    """Fuzzy-search the curated electronics parts library.
+    """Search the electronics parts library.
 
-    `query` matches against mpn, manufacturer, description, subcategory,
-    and tags (case-insensitive substring). Optionally constrain to a
-    category from list_categories().
+    Provider chain: Nexar (multi-distributor: Digi-Key, Mouser, LCSC, …)
+    → Mouser keyword search → curated in-repo dataset. The first
+    provider that returns ≥1 row wins; chain is logged in `attempts`.
 
-    Returns up to `limit` matches sorted by a simple relevance score
-    (exact mpn first, then mpn-prefix, then tag/description hits).
+    `query` is the free-text search (mpn, manufacturer, function,
+    description). `category` optionally narrows results (case-insensitive).
+    `limit` is capped at 50.
     """
-    if limit < 1 or limit > 50:
-        limit = 10
-    q = query.strip().lower()
-    if not q:
-        return {"results": [], "total": 0, "query": query}
-
-    cat_filter = category.strip().lower() if category else None
-
-    scored: list[tuple[int, dict[str, Any]]] = []
-    for p in _PARTS:
-        if cat_filter and (p.get("category") or "").lower() != cat_filter:
-            continue
-        mpn = (p.get("mpn") or "").lower()
-        haystack_parts = [
-            mpn,
-            (p.get("manufacturer") or "").lower(),
-            (p.get("description") or "").lower(),
-            (p.get("subcategory") or "").lower(),
-            " ".join(t.lower() for t in p.get("tags", [])),
-        ]
-        haystack = " | ".join(haystack_parts)
-
-        score = 0
-        if q == mpn:
-            score = 1000
-        elif mpn.startswith(q):
-            score = 500
-        elif q in mpn:
-            score = 200
-        elif any(q == t.lower() for t in p.get("tags", [])):
-            score = 150
-        elif q in haystack:
-            score = 50
-
-        if score > 0:
-            scored.append((score, p))
-
-    scored.sort(key=lambda s: -s[0])
-    results = [p for _, p in scored[:limit]]
-    return {
-        "query": query,
-        "category": category,
-        "total": len(scored),
-        "returned": len(results),
-        "results": results,
-    }
+    if limit < 1:
+        limit = 1
+    if limit > 50:
+        limit = 50
+    return get_aggregator().search(query, category=category, limit=limit)
 
 
 @server.tool()
 def get_part(mpn: str) -> dict[str, Any]:
-    """Fetch the full record for a single part by exact MPN. Case-insensitive."""
-    if not mpn:
-        return {"error": "mpn is required"}
-    direct = _BY_MPN.get(mpn) or _BY_MPN.get(mpn.upper()) or _BY_MPN.get(mpn.lower())
-    if direct:
-        return {"part": direct}
-    needle = mpn.upper()
-    for key, val in _BY_MPN.items():
-        if key.upper() == needle:
-            return {"part": val}
-    return {"error": f"part not found: {mpn}"}
+    """Fetch the full record for a single part by exact MPN.
+
+    Provider chain: Nexar → Digi-Key → Mouser → curated. First hit wins.
+    Returns `{ part, source, attempts }` on success or
+    `{ error, attempts }` if no provider knew the MPN.
+    """
+    return get_aggregator().get(mpn)
 
 
 @server.tool()
 def recommend_alternative(mpn: str, reason: str | None = None) -> dict[str, Any]:
     """Find functionally-similar alternatives to a given MPN.
 
-    Currently uses the curated `alternatives` list for each part. Phase 6c
-    will replace this with cross-distributor lookup + spec matching.
-
-    `reason` is a free-form note (e.g. "lower BOM cost", "pin-compatible
-    upgrade", "in-stock substitute"). Recorded for future ranking.
+    Backed by the curated `alternatives` list per part (live distributor
+    APIs don't expose functional substitutes — that's a derived concept).
+    `reason` is recorded for future ranking.
     """
-    if not mpn:
-        return {"error": "mpn is required"}
-    found = _BY_MPN.get(mpn) or _BY_MPN.get(mpn.upper()) or _BY_MPN.get(mpn.lower())
-    if not found:
-        return {"error": f"part not found: {mpn}", "alternatives": []}
-    alt_mpns = found.get("alternatives", []) or []
-    alts = [_BY_MPN[m] for m in alt_mpns if m in _BY_MPN]
-    return {
-        "original_mpn": found["mpn"],
-        "reason": reason,
-        "alternatives": alts,
-        "missing_from_dataset": [m for m in alt_mpns if m not in _BY_MPN],
-    }
+    return get_aggregator().recommend_alternative(mpn, reason)
 
 
 def main() -> None:
