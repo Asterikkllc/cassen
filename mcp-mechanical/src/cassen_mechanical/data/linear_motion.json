@@ -1,0 +1,55 @@
+[
+  {
+    "id": "shaft-8mm-hardened",
+    "category": "linear_motion",
+    "subcategory": "linear_shaft",
+    "spec": "hardened chromed steel shaft",
+    "size": "8 mm OD",
+    "description": "8 mm OD precision-ground hardened linear shaft. Pairs with LM8UU bushings.",
+    "dimensions_mm": {"od": 8.0, "tolerance_h7": "+0/-0.015"},
+    "material_options": ["case-hardened chromed steel (60+ HRC surface)", "stainless 440C (corrosion resistant, slightly softer)"],
+    "common_suppliers": ["Misumi", "McMaster-Carr", "VXB"],
+    "use_cases": ["3D printer X/Y/Z", "small CNC", "manual linear stages"],
+    "notes": "Stock lengths typically 100–600 mm. For precision motion at ~200 mm+, consider linear rails (HGR15) instead."
+  },
+  {
+    "id": "lead-screw-tr8x8",
+    "category": "linear_motion",
+    "subcategory": "lead_screw",
+    "spec": "T8 trapezoidal lead screw",
+    "size": "T8 x 8 mm lead",
+    "description": "T8 trapezoidal lead screw, 8 mm pitch x 8 mm lead (single start). One nut rotation = 8 mm linear travel.",
+    "dimensions_mm": {"od": 8.0, "pitch": 8.0, "lead": 8.0},
+    "material_options": ["stainless steel + brass nut", "stainless + POM/Delrin anti-backlash nut"],
+    "common_suppliers": ["Misumi", "OpenBuilds", "AliExpress (bulk)"],
+    "use_cases": ["3D printer Z-axis (Voron, Prusa)", "small CNC Z", "vertical lift stages"],
+    "notes": "Anti-backlash nut is essential when the load reverses direction (e.g. CNC plunge). Plain brass nut is fine for one-direction lifts."
+  },
+  {
+    "id": "linear-rail-hgr15",
+    "category": "linear_motion",
+    "subcategory": "linear_rail",
+    "spec": "HG profile linear rail, 15 mm",
+    "size": "HGR15 + HGH15CA carriage",
+    "description": "15 mm HG-series linear rail. Profile rail is 15 mm wide, paired with HGH15CA standard-block carriage. Higher load + accuracy than LM8UU.",
+    "dimensions_mm": {"rail_width": 15.0, "rail_height": 15.0, "carriage_height_above_rail": 9.0},
+    "load_rating": {"dynamic_kN": 13.7, "static_kN": 22.6},
+    "material_options": ["bearing steel + chrome plating"],
+    "common_suppliers": ["Misumi", "Hiwin (via distributors)", "AliExpress (clones, mixed quality)"],
+    "use_cases": ["Voron 2.4 X/Y", "precision CNC", "anywhere LM8UU sag is unacceptable"],
+    "notes": "Genuine Hiwin/THK rails are smoother + quieter than clones. Clones are 1/4 the price and adequate for most maker projects."
+  },
+  {
+    "id": "gt2-belt-6mm",
+    "category": "linear_motion",
+    "subcategory": "timing_belt",
+    "spec": "GT2 / 2GT timing belt",
+    "size": "GT2 6 mm width",
+    "description": "GT2 (2 mm pitch) timing belt, 6 mm wide. The 3D-printer-and-small-CNC standard.",
+    "dimensions_mm": {"pitch": 2.0, "width": 6.0},
+    "material_options": ["fiberglass-reinforced rubber", "steel-cord-reinforced (lower stretch)"],
+    "common_suppliers": ["Gates (genuine)", "Misumi", "AliExpress (clones)"],
+    "use_cases": ["3D printer X/Y belts", "small CNC", "compact pulley systems"],
+    "notes": "Pair with 16T or 20T GT2 pulleys (5 mm bore for NEMA 17 motors). Closed-loop lengths sold by mm, open-ended sold by meter."
+  }
+]

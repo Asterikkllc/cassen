@@ -1,0 +1,63 @@
+[
+  {
+    "id": "standoff-m3-hex-5",
+    "category": "standoff",
+    "subcategory": "hex_female_female",
+    "spec": "common metric hex standoff",
+    "size": "M3 F-F 5 mm",
+    "description": "M3 female-female hex standoff, 5 mm body length. Both ends threaded. Sometimes called 'spacer'.",
+    "dimensions_mm": {"thread": 3.0, "length": 5.0, "across_flats": 5.0},
+    "material_options": ["brass nickel-plated", "A2 stainless", "aluminum"],
+    "common_suppliers": ["McMaster-Carr", "Adafruit", "Pololu", "AliExpress (bulk)"],
+    "use_cases": ["raise PCB above chassis", "create air gap between boards", "mount LCD over PCB"]
+  },
+  {
+    "id": "standoff-m3-hex-10",
+    "category": "standoff",
+    "subcategory": "hex_female_female",
+    "spec": "common metric hex standoff",
+    "size": "M3 F-F 10 mm",
+    "description": "M3 female-female hex standoff, 10 mm body length.",
+    "dimensions_mm": {"thread": 3.0, "length": 10.0, "across_flats": 5.0},
+    "material_options": ["brass nickel-plated", "A2 stainless", "aluminum"],
+    "common_suppliers": ["McMaster-Carr", "Adafruit", "Pololu"],
+    "use_cases": ["typical PCB-to-chassis spacing", "stack boards in dev kits"]
+  },
+  {
+    "id": "standoff-m3-hex-20",
+    "category": "standoff",
+    "subcategory": "hex_female_female",
+    "spec": "common metric hex standoff",
+    "size": "M3 F-F 20 mm",
+    "description": "M3 female-female hex standoff, 20 mm body length.",
+    "dimensions_mm": {"thread": 3.0, "length": 20.0, "across_flats": 5.0},
+    "material_options": ["brass nickel-plated", "A2 stainless", "aluminum"],
+    "common_suppliers": ["McMaster-Carr", "Adafruit", "Pololu"],
+    "use_cases": ["stack two PCBs with components between", "Pi HAT spacing for tall stacks"]
+  },
+  {
+    "id": "standoff-m3-mf-10-6",
+    "category": "standoff",
+    "subcategory": "hex_male_female",
+    "spec": "common metric hex standoff",
+    "size": "M3 M-F 10+6 mm",
+    "description": "M3 male-female hex standoff, 10 mm body + 6 mm threaded stud. Male side bolts into a chassis hole, female side accepts a screw from the PCB.",
+    "dimensions_mm": {"thread": 3.0, "body_length": 10.0, "stud_length": 6.0, "across_flats": 5.0},
+    "material_options": ["brass nickel-plated", "A2 stainless"],
+    "common_suppliers": ["McMaster-Carr", "Pololu"],
+    "use_cases": ["mount PCB to chassis without a captive nut", "stackable standoff chains"]
+  },
+  {
+    "id": "standoff-heatset-m3-3-4",
+    "category": "standoff",
+    "subcategory": "heat_set_insert",
+    "spec": "Voron-spec McMaster 94180A331",
+    "size": "M3 heat-set insert 3.4 mm OD x 4 mm",
+    "description": "M3 brass heat-set insert for plastic. Press into a printed hole with a soldering iron tip. The 3D-printer community standard.",
+    "dimensions_mm": {"thread": 3.0, "od": 3.4, "length": 4.0, "hole_diameter_in_print": 4.0},
+    "material_options": ["brass"],
+    "common_suppliers": ["McMaster-Carr (94180A331)", "AliExpress (bulk)"],
+    "use_cases": ["3D-printed enclosures", "captive thread in plastic parts", "Voron printer chassis"],
+    "notes": "Print the receiving hole at 4.0 mm diameter. Use a heat-set tip on the soldering iron, ~250 °C, press straight in 5–10 seconds."
+  }
+]

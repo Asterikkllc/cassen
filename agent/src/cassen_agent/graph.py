@@ -76,6 +76,41 @@ Plain markdown, no preamble. Do not invent MPNs that the researcher didn't \
 return.
 """
 
+MECHANICAL_RESEARCH_SYSTEM = """You are the Cassen mechanical researcher.
+
+Your job is to ground the project's structural / hardware decisions in \
+real, sourceable parts BEFORE any CAD geometry is generated. Tools:
+- list_categories: see what kinds of mechanical parts the catalog covers \
+  (fastener, bearing, extrusion, standoff, linear_motion).
+- search_part(query, category?, limit?): substring search the catalog by \
+  size like 'M3x10' or '608', spec like 'DIN 912', or use case.
+- get_part(part_id): full record for one id (e.g. 'din912-m3-10').
+- recommend_for_function(function, context?): keyword heuristic — useful \
+  when you know the function ('mount PCB', 'vibration-resistant nut', \
+  'linear motion') but not the specific spec.
+
+Process:
+1. Identify the project's mechanical needs (assembly fasteners? \
+   structural extrusion? bearings? standoffs?).
+2. For each need, call recommend_for_function to discover candidates, \
+   then get_part for the one you choose. Use search_part when you \
+   already have a size in mind.
+3. End your turn with a compact JSON summary:
+   {
+     "mechanical_picks": [
+       { "function": "mount PCB to enclosure", "part_id": "...", "rationale": "..." },
+       ...
+     ]
+   }
+   No prose after the JSON.
+
+Three to six tool calls is typical. Don't pick more parts than the \
+project actually needs — for a small electronics enclosure that's \
+usually 1-2 picks (standoffs + fasteners). Don't invent part IDs — \
+only return ones a tool returned to you.
+"""
+
+
 MECHANICAL_DESIGN_SYSTEM = """You are the Cassen mechanical designer.
 
 You have CAD tools backed by a build123d service:
@@ -184,6 +219,27 @@ def _extract_trailing_json(text: str) -> dict | None:
     except Exception:  # noqa: BLE001
         return None
     return parsed if isinstance(parsed, dict) else None
+
+
+def _extract_mechanical_picks(text: str) -> list[dict[str, Any]]:
+    """Pull `mechanical_picks` JSON list from the researcher's free-form output."""
+    parsed = _extract_trailing_json(text)
+    if not parsed:
+        return []
+    raw = parsed.get("mechanical_picks")
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for p in raw:
+        if isinstance(p, dict) and p.get("part_id"):
+            out.append(
+                {
+                    "function": str(p.get("function", "")),
+                    "part_id": str(p.get("part_id", "")),
+                    "rationale": str(p.get("rationale", "")),
+                }
+            )
+    return out
 
 
 def _extract_mechanical_pick(text: str) -> dict[str, Any] | None:
@@ -519,6 +575,125 @@ async def run_graph(input: GraphInput) -> AsyncIterator[GraphEvent]:
                                 "calls": research_calls,
                             }
 
+                # ---- mechanical research (conditional) -------------------
+                # Picks fasteners/bearings/extrusion from the curated
+                # catalog before CAD generation, so mechanical_design
+                # can size geometry against real part dimensions.
+                if "mechanical" in domains and settings.mcp_mechanical_path:
+                    update_project_status(input.project_id, "researching-mechanical")
+                    yield GraphEvent(
+                        kind="status", data={"status": "researching-mechanical"}
+                    )
+                    yield GraphEvent(kind="node-start", node="mechanical_research")
+
+                    mech_research_user = (
+                        "Project request:\n"
+                        f"{input.prompt}\n\n"
+                        f"Planner decomposition (JSON):\n{''.join(plan_text_parts)}\n"
+                    )
+                    mech_research_calls: list[dict[str, Any]] = []
+                    mech_research_text_parts: list[str] = []
+
+                    with _maybe_span(
+                        langfuse,
+                        name="mechanical_research",
+                        as_type="generation",
+                        input={"prompt": input.prompt},
+                        model=settings.research_model,
+                        model_parameters={
+                            "max_tokens": settings.research_max_tokens,
+                            "max_iterations": settings.research_max_iterations,
+                        },
+                    ) as mech_research_span:
+                        try:
+                            async with mcp_session(
+                                command=settings.uv_command,
+                                args=[
+                                    "run",
+                                    "--project",
+                                    settings.mcp_mechanical_path,
+                                    "python",
+                                    "-m",
+                                    "cassen_mechanical.server",
+                                ],
+                            ) as session:
+                                async for event_kind, payload in run_tool_using_loop(
+                                    client=client,
+                                    session=session,
+                                    system=MECHANICAL_RESEARCH_SYSTEM,
+                                    user_prompt=mech_research_user,
+                                    model=settings.research_model,
+                                    max_tokens=settings.research_max_tokens,
+                                    max_iterations=settings.research_max_iterations,
+                                ):
+                                    if event_kind == "iteration":
+                                        yield GraphEvent(
+                                            kind="iteration",
+                                            node="mechanical_research",
+                                            data=payload,
+                                        )
+                                    elif event_kind == "assistant-text":
+                                        mech_research_text_parts.append(payload["text"])
+                                        yield GraphEvent(
+                                            kind="token",
+                                            node="mechanical_research",
+                                            data=payload["text"],
+                                        )
+                                    elif event_kind == "tool-call-start":
+                                        yield GraphEvent(
+                                            kind="tool-call-start",
+                                            node="mechanical_research",
+                                            data=payload,
+                                        )
+                                    elif event_kind == "tool-call-end":
+                                        mech_research_calls.append(payload)
+                                        yield GraphEvent(
+                                            kind="tool-call-end",
+                                            node="mechanical_research",
+                                            data=payload,
+                                        )
+                                    elif event_kind == "tool-error":
+                                        yield GraphEvent(
+                                            kind="tool-error",
+                                            node="mechanical_research",
+                                            data=payload,
+                                        )
+                                    elif event_kind == "done":
+                                        final_text = payload.get("final_text", "")
+                                        picks = _extract_mechanical_picks(final_text)
+                                        research_outputs["mechanical_research"] = {
+                                            "final_text": final_text,
+                                            "picks": picks,
+                                            "calls": mech_research_calls,
+                                            "stop_reason": payload.get("stop_reason"),
+                                        }
+                                        yield GraphEvent(
+                                            kind="node-end",
+                                            node="mechanical_research",
+                                            data={
+                                                "text": final_text,
+                                                "picks": picks,
+                                                "calls_made": len(mech_research_calls),
+                                            },
+                                        )
+                                        if mech_research_span is not None:
+                                            mech_research_span.update(
+                                                output={
+                                                    "picks": picks,
+                                                    "calls_made": len(mech_research_calls),
+                                                },
+                                            )
+                        except Exception as exc:  # noqa: BLE001
+                            yield GraphEvent(
+                                kind="tool-error",
+                                node="mechanical_research",
+                                data={"error": str(exc)},
+                            )
+                            research_outputs["mechanical_research"] = {
+                                "error": str(exc),
+                                "calls": mech_research_calls,
+                            }
+
                 # ---- mechanical design (conditional) ---------------------
                 if "mechanical" in domains and settings.mcp_cad_path:
                     update_project_status(input.project_id, "designing-mechanical")
@@ -530,6 +705,13 @@ async def run_graph(input: GraphInput) -> AsyncIterator[GraphEvent]:
                     elec = research_outputs.get("electronics") or {}
                     elec_summary = elec.get("final_text", "") if isinstance(elec, dict) else ""
 
+                    mech_research = research_outputs.get("mechanical_research") or {}
+                    mech_research_summary = (
+                        mech_research.get("final_text", "")
+                        if isinstance(mech_research, dict)
+                        else ""
+                    )
+
                     mech_user = (
                         "Project request:\n"
                         f"{input.prompt}\n\n"
@@ -537,6 +719,12 @@ async def run_graph(input: GraphInput) -> AsyncIterator[GraphEvent]:
                         + (
                             f"\nElectronics picks (size enclosure to fit):\n{elec_summary}\n"
                             if elec_summary
+                            else ""
+                        )
+                        + (
+                            "\nMechanical hardware picks (account for these dims):\n"
+                            f"{mech_research_summary}\n"
+                            if mech_research_summary
                             else ""
                         )
                     )
@@ -670,9 +858,18 @@ async def run_graph(input: GraphInput) -> AsyncIterator[GraphEvent]:
                         f"{electronics_research['final_text']}\n"
                     )
 
-                mechanical_research = research_outputs.get("mechanical")
-                if mechanical_research and mechanical_research.get("pick"):
-                    pick = mechanical_research["pick"]
+                mechanical_hw = research_outputs.get("mechanical_research")
+                if mechanical_hw and mechanical_hw.get("picks"):
+                    research_block += "\nMechanical hardware selections (curated catalog):\n"
+                    for p in mechanical_hw["picks"]:
+                        research_block += (
+                            f"- {p.get('part_id')}: {p.get('function')}"
+                            f" — {p.get('rationale','')}\n"
+                        )
+
+                mechanical_design = research_outputs.get("mechanical")
+                if mechanical_design and mechanical_design.get("pick"):
+                    pick = mechanical_design["pick"]
                     research_block += (
                         "\nMechanical CAD selection (real STEP geometry produced):\n"
                         f"- template: {pick.get('template') or 'custom build123d script'}\n"

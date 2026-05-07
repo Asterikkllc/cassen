@@ -1,0 +1,82 @@
+[
+  {
+    "id": "608-2rs",
+    "category": "bearing",
+    "subcategory": "deep_groove_ball_bearing",
+    "spec": "ISO 15:2017 / 608",
+    "size": "608",
+    "description": "608-2RS deep-groove ball bearing with rubber seals. The skateboard bearing — the most common 8 mm ID radial bearing in maker projects.",
+    "dimensions_mm": {"id": 8.0, "od": 22.0, "width": 7.0},
+    "load_rating": {"dynamic_kN": 3.45, "static_kN": 1.37, "max_rpm": 32000},
+    "material_options": ["chrome steel + nitrile seals", "stainless 440C", "ceramic Si3N4 hybrid"],
+    "common_suppliers": ["McMaster-Carr", "VXB Bearings", "AliExpress (bulk)"],
+    "use_cases": ["skateboard wheels", "cnc spindle idlers", "fishing reels", "pulley wheels"],
+    "notes": "2RS = rubber seals both sides. ZZ = metal shields (lower drag, less sealed). Open for highest RPM but requires external sealing."
+  },
+  {
+    "id": "623-zz",
+    "category": "bearing",
+    "subcategory": "deep_groove_ball_bearing",
+    "spec": "ISO 15 / 623",
+    "size": "623",
+    "description": "623-ZZ miniature ball bearing with metal shields. Tiny — fits 3 mm shafts.",
+    "dimensions_mm": {"id": 3.0, "od": 10.0, "width": 4.0},
+    "load_rating": {"dynamic_kN": 0.59, "static_kN": 0.18, "max_rpm": 60000},
+    "material_options": ["chrome steel + metal shields", "stainless 440C"],
+    "common_suppliers": ["McMaster-Carr", "VXB Bearings"],
+    "use_cases": ["small fans", "robot finger joints", "model RC", "filament guides"]
+  },
+  {
+    "id": "625-zz",
+    "category": "bearing",
+    "subcategory": "deep_groove_ball_bearing",
+    "spec": "ISO 15 / 625",
+    "size": "625",
+    "description": "625-ZZ ball bearing for 5 mm shafts. Common in 3D printer Y-axis idlers.",
+    "dimensions_mm": {"id": 5.0, "od": 16.0, "width": 5.0},
+    "load_rating": {"dynamic_kN": 1.72, "static_kN": 0.74, "max_rpm": 43000},
+    "material_options": ["chrome steel + metal shields", "stainless 440C"],
+    "common_suppliers": ["McMaster-Carr", "VXB Bearings"],
+    "use_cases": ["3D printer idler pulleys", "GT2 belt tensioners", "small CNC"]
+  },
+  {
+    "id": "6800-2rs",
+    "category": "bearing",
+    "subcategory": "thin_section_ball_bearing",
+    "spec": "ISO 15 / 6800",
+    "size": "6800",
+    "description": "6800-2RS thin-section bearing. 10 mm ID, only 5 mm wide — common for compact rotating mechanisms.",
+    "dimensions_mm": {"id": 10.0, "od": 19.0, "width": 5.0},
+    "load_rating": {"dynamic_kN": 1.74, "static_kN": 0.93, "max_rpm": 32000},
+    "material_options": ["chrome steel + rubber seals"],
+    "common_suppliers": ["McMaster-Carr", "VXB Bearings"],
+    "use_cases": ["robot wrist joints", "camera gimbals", "compact rotating platforms"]
+  },
+  {
+    "id": "6200-2rs",
+    "category": "bearing",
+    "subcategory": "deep_groove_ball_bearing",
+    "spec": "ISO 15 / 6200",
+    "size": "6200",
+    "description": "6200-2RS ball bearing. 10 mm ID standard radial bearing — heavier-duty than 6800.",
+    "dimensions_mm": {"id": 10.0, "od": 30.0, "width": 9.0},
+    "load_rating": {"dynamic_kN": 5.07, "static_kN": 2.36, "max_rpm": 24000},
+    "material_options": ["chrome steel + rubber seals"],
+    "common_suppliers": ["McMaster-Carr", "VXB Bearings"],
+    "use_cases": ["small motors", "cart wheels", "pulleys with axial load"]
+  },
+  {
+    "id": "lm8uu",
+    "category": "bearing",
+    "subcategory": "linear_ball_bearing",
+    "spec": "common 8 mm linear bushing",
+    "size": "LM8UU",
+    "description": "8 mm ID linear ball bearing. The Reprap-era 3D printer linear motion staple.",
+    "dimensions_mm": {"id": 8.0, "od": 15.0, "length": 24.0},
+    "load_rating": {"dynamic_N": 196},
+    "material_options": ["chrome steel + plastic cage"],
+    "common_suppliers": ["McMaster-Carr", "Misumi", "AliExpress (bulk)"],
+    "use_cases": ["3D printer X/Y/Z axis", "small CNC", "linear sliding mechanisms"],
+    "notes": "Pairs with hardened 8 mm linear shaft. For higher precision/lower noise, prefer linear rails (HGR15) — but cost is ~10x."
+  }
+]
