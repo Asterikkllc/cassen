@@ -1,8 +1,11 @@
 "use client";
 
-import { Suspense, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
+import * as THREE from "three";
 import { Canvas, type ThreeEvent } from "@react-three/fiber";
 import { Grid, OrbitControls, Text } from "@react-three/drei";
+import { Bloom, EffectComposer, ToneMapping } from "@react-three/postprocessing";
+import { ToneMappingMode } from "postprocessing";
 import { X } from "lucide-react";
 
 export type CandidatePart = {
@@ -48,6 +51,16 @@ const COLS = 4;
 const SPACING_X = 1.8;
 const SPACING_Z = 1.8;
 
+type RendererMode = "webgl" | "webgpu" | "detecting";
+
+async function buildWebGPURenderer(props: unknown): Promise<unknown> {
+  const mod = (await import("three/webgpu")) as typeof import("three/webgpu");
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const renderer = new mod.WebGPURenderer(props as any);
+  await renderer.init();
+  return renderer;
+}
+
 function PartBox({
   part,
   position,
@@ -57,13 +70,13 @@ function PartBox({
   part: CandidatePart;
   position: [number, number, number];
   selected: boolean;
-  onPick: (p: CandidatePart, screen: { x: number; y: number }) => void;
+  onPick: (p: CandidatePart) => void;
 }) {
   const [hover, setHover] = useState(false);
   const color = colorFor(part);
   const handleClick = (e: ThreeEvent<MouseEvent>) => {
     e.stopPropagation();
-    onPick(part, { x: e.clientX, y: e.clientY });
+    onPick(part);
   };
   return (
     <group position={position}>
@@ -84,8 +97,8 @@ function PartBox({
         <meshStandardMaterial
           color={color}
           emissive={selected ? color : "#000000"}
-          emissiveIntensity={selected ? 0.6 : 0}
-          metalness={0.2}
+          emissiveIntensity={selected ? 1.2 : 0}
+          metalness={0.25}
           roughness={0.4}
           opacity={hover || selected ? 1 : 0.92}
           transparent
@@ -117,8 +130,46 @@ function PartBox({
   );
 }
 
+function useIsMobile(): boolean {
+  const [mobile, setMobile] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const mq = window.matchMedia("(max-width: 768px)");
+    setMobile(mq.matches);
+    const handle = (e: MediaQueryListEvent) => setMobile(e.matches);
+    mq.addEventListener("change", handle);
+    return () => mq.removeEventListener("change", handle);
+  }, []);
+  return mobile;
+}
+
 export function ProjectViewer({ candidateParts }: ProjectViewerProps) {
   const [selected, setSelected] = useState<CandidatePart | null>(null);
+  const [mode, setMode] = useState<RendererMode>("detecting");
+  const isMobile = useIsMobile();
+
+  // Detect WebGPU once on mount. Falls back to WebGL2 if the navigator
+  // API is missing, requestAdapter returns null, or feature-detect throws.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const gpu: any = (navigator as any).gpu;
+        if (!gpu || typeof gpu.requestAdapter !== "function") {
+          if (!cancelled) setMode("webgl");
+          return;
+        }
+        const adapter = await gpu.requestAdapter();
+        if (!cancelled) setMode(adapter ? "webgpu" : "webgl");
+      } catch {
+        if (!cancelled) setMode("webgl");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const positions = useMemo<[number, number, number][]>(() => {
     return candidateParts.map((_, i) => {
@@ -141,22 +192,40 @@ export function ProjectViewer({ candidateParts }: ProjectViewerProps) {
     );
   }
 
+  if (mode === "detecting") {
+    return (
+      <div className="flex h-[440px] w-full items-center justify-center rounded-2xl border border-neutral-800 bg-neutral-950 text-sm text-neutral-500">
+        Initializing renderer…
+      </div>
+    );
+  }
+
   return (
     <div className="relative h-[440px] w-full overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-950">
       <Canvas
-        shadows
-        dpr={[1, 2]}
+        key={mode}
+        shadows={!isMobile}
+        dpr={isMobile ? [1, 1.5] : [1, 2]}
         camera={{ position: [4, 4, 6], fov: 45 }}
-        gl={{ antialias: true, powerPreference: "high-performance" }}
+        gl={
+          mode === "webgpu"
+            ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              (buildWebGPURenderer as any)
+            : { antialias: true, powerPreference: "high-performance" }
+        }
+        onCreated={({ gl }) => {
+          gl.toneMapping = THREE.ACESFilmicToneMapping;
+          gl.toneMappingExposure = 1.05;
+        }}
       >
         <color attach="background" args={["#0a0a0a"]} />
         <ambientLight intensity={0.45} />
         <directionalLight
           position={[6, 8, 4]}
           intensity={1.1}
-          castShadow
-          shadow-mapSize-width={1024}
-          shadow-mapSize-height={1024}
+          castShadow={!isMobile}
+          shadow-mapSize-width={isMobile ? 512 : 1024}
+          shadow-mapSize-height={isMobile ? 512 : 1024}
         />
         <Suspense fallback={null}>
           {candidateParts.map((part, i) => (
@@ -164,7 +233,9 @@ export function ProjectViewer({ candidateParts }: ProjectViewerProps) {
               key={`${part.mpn ?? "_"}-${i}`}
               part={part}
               position={positions[i]}
-              selected={selected?.mpn === part.mpn && selected?.function === part.function}
+              selected={
+                selected?.mpn === part.mpn && selected?.function === part.function
+              }
               onPick={(p) => setSelected(p)}
             />
           ))}
@@ -187,11 +258,33 @@ export function ProjectViewer({ candidateParts }: ProjectViewerProps) {
           maxDistance={20}
           target={[0, 0, 0]}
         />
+        {mode === "webgl" ? (
+          <EffectComposer multisampling={isMobile ? 0 : 4}>
+            <Bloom
+              intensity={0.7}
+              luminanceThreshold={0.3}
+              luminanceSmoothing={0.6}
+              mipmapBlur
+            />
+            <ToneMapping mode={ToneMappingMode.ACES_FILMIC} />
+          </EffectComposer>
+        ) : null}
       </Canvas>
 
-      <div className="pointer-events-none absolute left-4 top-4 rounded-full border border-white/10 bg-black/40 px-3 py-1 text-xs text-neutral-300 backdrop-blur">
-        Placeholder geometry · {candidateParts.length} part
-        {candidateParts.length === 1 ? "" : "s"}
+      <div className="pointer-events-none absolute left-4 top-4 flex items-center gap-2">
+        <span className="rounded-full border border-white/10 bg-black/40 px-3 py-1 text-xs text-neutral-300 backdrop-blur">
+          Placeholder geometry · {candidateParts.length} part
+          {candidateParts.length === 1 ? "" : "s"}
+        </span>
+        <span
+          className={
+            mode === "webgpu"
+              ? "rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-[10px] uppercase tracking-wider text-emerald-300 backdrop-blur"
+              : "rounded-full border border-white/10 bg-black/40 px-2.5 py-1 text-[10px] uppercase tracking-wider text-neutral-400 backdrop-blur"
+          }
+        >
+          {mode === "webgpu" ? "WebGPU" : "WebGL2"}
+        </span>
       </div>
 
       {selected ? (
