@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   AlertCircle,
   ChevronDown,
@@ -87,6 +88,7 @@ export function AgentRun({
   const [error, setError] = useState<string | null>(null);
   const [nodes, setNodes] = useState<NodeBuffer[]>(initialNodes);
   const abortRef = useRef<AbortController | null>(null);
+  const router = useRouter();
 
   const updateNode = useCallback(
     (nodeId: string, mutate: (b: NodeBuffer) => NodeBuffer) => {
@@ -185,6 +187,10 @@ export function AgentRun({
           break;
         case "complete":
           setStatus("done");
+          // Re-render the server component so the 3D viewer picks up
+          // the freshly-persisted glb_b64 / candidate_parts without
+          // requiring the user to navigate away and back.
+          router.refresh();
           break;
         case "error":
           setStatus("error");
@@ -235,6 +241,10 @@ export function AgentRun({
         }
       }
       setStatus((s) => (s === "running" ? "done" : s));
+      // Belt-and-suspenders: if the stream ended without a "complete"
+      // event (server hung up, retry exhausted), still refresh so the
+      // viewer shows whatever did persist.
+      router.refresh();
     } catch (err: unknown) {
       if ((err as Error)?.name === "AbortError") return;
       setStatus("error");

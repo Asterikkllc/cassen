@@ -587,6 +587,56 @@ def _last_step_b64_from_calls(calls: list[dict[str, Any]]) -> str | None:
     return None
 
 
+def _step_b64_for_pick(
+    calls: list[dict[str, Any]],
+    pick: dict[str, Any] | None,
+) -> str | None:
+    """Find the step_b64 from the call that matches the model's declared pick.
+
+    Models often explore multiple templates before settling — e.g. they
+    call generate_part(bracket_l), then generate_part(mounting_plate),
+    then write JSON saying their pick is bracket_l. _last_step_b64...
+    would return the mounting_plate STEP, mismatching the JSON. This
+    helper looks up the call whose `input.template` matches the pick's
+    declared template, so the rendered GLB is the one the agent claims
+    to have chosen.
+
+    Falls back to the last step_b64 if no match (custom script picks,
+    template name typos, missing pick metadata).
+    """
+    if not isinstance(pick, dict):
+        return _last_step_b64_from_calls(calls)
+    if pick.get("from_script"):
+        # Script picks don't have a template name to match on.
+        return _last_step_b64_from_calls(calls)
+    target_template = pick.get("template")
+    if not isinstance(target_template, str) or not target_template:
+        return _last_step_b64_from_calls(calls)
+
+    for call in reversed(calls):
+        if call.get("name") != "generate_part":
+            continue
+        input_data = call.get("input")
+        if not isinstance(input_data, dict):
+            continue
+        if input_data.get("template") != target_template:
+            continue
+        text = call.get("output_text") or ""
+        try:
+            parsed = json.loads(text)
+        except Exception:  # noqa: BLE001
+            continue
+        b64 = parsed.get("step_b64")
+        if isinstance(b64, str) and b64:
+            return b64
+
+    # No matching call — model named a template it never actually
+    # generated. Fall back to whatever STEP we do have so the viewer
+    # at least shows something (the model's narrative will be off,
+    # but the geometry is still valid).
+    return _last_step_b64_from_calls(calls)
+
+
 def _extract_candidate_parts(text: str) -> list[dict[str, Any]]:
     """Pull `candidate_parts` JSON from the researcher's free-form output.
 
@@ -1121,7 +1171,7 @@ async def run_graph(input: GraphInput) -> AsyncIterator[GraphEvent]:
                                     elif event_kind == "done":
                                         final_text = payload.get("final_text", "")
                                         pick = _extract_mechanical_pick(final_text)
-                                        last_b64 = _last_step_b64_from_calls(mech_calls)
+                                        last_b64 = _step_b64_for_pick(mech_calls, pick)
                                         research_outputs["mechanical"] = {
                                             "final_text": final_text,
                                             "pick": pick,
