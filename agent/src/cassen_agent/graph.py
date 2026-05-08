@@ -1277,18 +1277,47 @@ async def run_graph(input: GraphInput) -> AsyncIterator[GraphEvent]:
                     "bom": bom,
                     "bom_source": bom_source,
                 }
-                append_version_snapshot(
-                    project_id=input.project_id,
-                    snapshot=snapshot,
-                    created_by=input.owner_id,
-                    note="Phase 12 cross-domain run",
-                )
+
+                # Emit the in-memory artifact BEFORE persistence so the
+                # client never loses the result if the snapshot insert
+                # flakes. Persistence failures get their own event and
+                # surface in agent stderr — they don't kill the stream.
                 yield GraphEvent(
                     kind="bom",
                     data={"bom": bom, "source": bom_source, "count": len(bom)},
                 )
-                update_project_status(input.project_id, "draft")
-                yield GraphEvent(kind="complete", data={"status": "draft"})
+
+                persist_error: str | None = None
+                try:
+                    append_version_snapshot(
+                        project_id=input.project_id,
+                        snapshot=snapshot,
+                        created_by=input.owner_id,
+                        note="Phase 12 cross-domain run",
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    persist_error = str(exc)
+                    print(
+                        f"[agent] WARNING: append_version_snapshot failed: {exc}",
+                        file=__import__("sys").stderr,
+                    )
+                    yield GraphEvent(
+                        kind="warning",
+                        data={
+                            "stage": "persist_snapshot",
+                            "message": persist_error,
+                        },
+                    )
+
+                final_status = "draft" if persist_error is None else "failed"
+                try:
+                    update_project_status(input.project_id, final_status)
+                except Exception as exc:  # noqa: BLE001
+                    print(
+                        f"[agent] WARNING: update_project_status({final_status}) failed: {exc}",
+                        file=__import__("sys").stderr,
+                    )
+                yield GraphEvent(kind="complete", data={"status": final_status})
 
                 if root_span is not None:
                     root_span.update(output=snapshot)
