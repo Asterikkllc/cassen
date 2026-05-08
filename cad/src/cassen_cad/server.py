@@ -153,9 +153,13 @@ async def generate_from_script(body: dict[str, Any] = Body(default_factory=dict)
     if len(code) > 64 * 1024:
         raise HTTPException(413, "script exceeds 64 KB limit")
 
-    # build123d's cold-import on Windows is ~10-15s, so default 30s
-    timeout_s = float(body.get("timeout_s") or 30.0)
-    timeout_s = max(5.0, min(timeout_s, 60.0))
+    # build123d's cold-import on Windows is ~10-15s. Defaults sized for
+    # composite assemblies (drone frames, custom enclosures with cutouts):
+    # 90s default leaves ~75-80s of actual geometry time after cold-import.
+    # Cap is 240s for genuinely complex scripts (lofts, sweeps, branded
+    # lettering as 3D extrusion, multi-arm hexacopters with cutouts).
+    timeout_s = float(body.get("timeout_s") or 90.0)
+    timeout_s = max(5.0, min(timeout_s, 240.0))
 
     try:
         result = run_script(code, timeout_s=timeout_s)

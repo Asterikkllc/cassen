@@ -198,9 +198,9 @@ def _set_posix_limits(cpu_s: int, mem_bytes: int) -> None:
 def run_script(
     code: str,
     *,
-    timeout_s: float = 30.0,
-    cpu_s: int = 45,
-    mem_bytes: int = 512 * 1024 * 1024,
+    timeout_s: float = 90.0,
+    cpu_s: int = 240,
+    mem_bytes: int = 1024 * 1024 * 1024,
 ) -> SandboxResult:
     """Validate then execute `code` in an isolated subprocess.
 

@@ -93,6 +93,12 @@ variable. The runner appends the export footer:
 Status codes: 400 (AST rejection / missing code), 413 (>64 KB source),
 422 (script ran but produced no STEP), 504 (wall-clock timeout).
 
+Default `timeout_s` is 90 (was 30); cap is 240 (was 60). build123d's
+cold-import on Windows costs ~10-15s before the script even starts,
+so the practical budget is ~75-225s of actual geometry work. Pass
+`timeout_s=180` for composite assemblies with multiple boolean
+unions (drone frames, hexacopter hubs, payload bays with cutouts).
+
 The sandbox is defence-in-depth, not a container. A later phase may
 move execution to Modal sandboxes; the AST gate stays in front of that.
 
