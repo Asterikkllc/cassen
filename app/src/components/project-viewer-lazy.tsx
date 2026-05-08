@@ -17,8 +17,12 @@ const ProjectViewer = dynamic(
 
 export function ProjectViewerLazy({
   candidateParts,
+  glbBase64,
 }: {
   candidateParts: CandidatePart[];
+  glbBase64?: string;
 }) {
-  return <ProjectViewer candidateParts={candidateParts} />;
+  return (
+    <ProjectViewer candidateParts={candidateParts} glbBase64={glbBase64} />
+  );
 }

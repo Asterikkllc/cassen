@@ -12,18 +12,67 @@ Falls through to a nullcontext when LANGFUSE keys are missing.
 
 from __future__ import annotations
 
+import base64
 import json
+import sys
 from collections.abc import AsyncIterator
 from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any
 
+import httpx
 from anthropic import AsyncAnthropic
 from langfuse import Langfuse, propagate_attributes
 
 from .db import append_version_snapshot, update_project_status
 from .settings import get_settings
 from .tools import mcp_session, run_tool_using_loop
+
+
+async def _convert_step_to_glb(step_b64: str) -> tuple[str, int] | None:
+    """Convert a base64-encoded STEP file to base64-encoded GLB bytes by
+    calling cad/'s /convert/step-to-gltf endpoint.
+
+    Returns (glb_b64, glb_byte_count) on success, None on any failure
+    (missing config, network error, conversion error). Failure is non-
+    fatal — the run still completes; the viewer just falls back to its
+    placeholder when no GLB is in the snapshot.
+    """
+    if not step_b64:
+        return None
+    s = get_settings()
+    if not (s.cad_base_url and s.cad_shared_secret):
+        print("[agent] glb skip: cad_base_url / cad_shared_secret unset", file=sys.stderr)
+        return None
+    try:
+        step_bytes = base64.b64decode(step_b64)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[agent] glb skip: bad base64 step bytes ({exc})", file=sys.stderr)
+        return None
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            r = await client.post(
+                f"{s.cad_base_url}/convert/step-to-gltf",
+                headers={"Authorization": f"Bearer {s.cad_shared_secret}"},
+                files={"file": ("part.step", step_bytes, "model/step")},
+            )
+    except httpx.RequestError as exc:
+        print(f"[agent] glb skip: cad request failed ({exc})", file=sys.stderr)
+        return None
+
+    if r.status_code != 200:
+        body_preview = (r.text or "")[:200]
+        print(
+            f"[agent] glb skip: cad returned HTTP {r.status_code}: {body_preview}",
+            file=sys.stderr,
+        )
+        return None
+
+    glb = r.content
+    if not glb:
+        return None
+    return base64.b64encode(glb).decode("ascii"), len(glb)
 
 
 @dataclass
@@ -1338,14 +1387,28 @@ async def run_graph(input: GraphInput) -> AsyncIterator[GraphEvent]:
 
                 # ---- snapshot + complete ----------------------------------
                 # Strip the bulky mechanical step_b64 from the persisted
-                # snapshot — the version row is meant for human + UI
-                # browsing, not as STEP storage. We keep the metadata
-                # (template, inputs, size, rationale) so the agent can
-                # re-derive it deterministically from cad/ if needed.
+                # snapshot, but BEFORE stripping, convert it through
+                # cad/'s /convert/step-to-gltf so the persisted snapshot
+                # carries glb_b64 for the in-browser viewer to render.
+                # GLB is what three.js loads; STEP is engineering-CAD-
+                # only and unrenderable client-side.
                 research_for_snapshot = {**research_outputs}
                 if "mechanical" in research_for_snapshot:
                     mech = dict(research_for_snapshot["mechanical"])
-                    mech.pop("step_b64", None)
+                    step_b64 = mech.pop("step_b64", None)
+                    if step_b64:
+                        glb_result = await _convert_step_to_glb(step_b64)
+                        if glb_result is not None:
+                            glb_b64, glb_size = glb_result
+                            mech["glb_b64"] = glb_b64
+                            mech["glb_size_bytes"] = glb_size
+                            yield GraphEvent(
+                                kind="status",
+                                data={
+                                    "status": "designing",
+                                    "geometry_glb_size_bytes": glb_size,
+                                },
+                            )
                     research_for_snapshot["mechanical"] = mech
 
                 # Cross-domain BoM. Prefer the designer's JSON block;

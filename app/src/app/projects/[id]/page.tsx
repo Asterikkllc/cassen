@@ -55,6 +55,17 @@ function extractCandidateParts(
     .filter((p) => p.mpn);
 }
 
+function extractGlbBase64(
+  snapshot: Record<string, unknown> | undefined,
+): string | undefined {
+  if (!snapshot) return undefined;
+  const research = (snapshot.research as Record<string, unknown> | undefined) ?? {};
+  const mechanical =
+    (research.mechanical as Record<string, unknown> | undefined) ?? {};
+  const glb = mechanical.glb_b64;
+  return typeof glb === "string" && glb.length > 0 ? glb : undefined;
+}
+
 export default async function ProjectDetailPage({
   params,
 }: {
@@ -67,6 +78,7 @@ export default async function ProjectDetailPage({
 
   const snapshot = await getLatestSnapshot(project.id);
   const candidateParts = extractCandidateParts(snapshot?.snapshot);
+  const glbBase64 = extractGlbBase64(snapshot?.snapshot);
 
   return (
     <>
@@ -123,7 +135,10 @@ export default async function ProjectDetailPage({
               </p>
             ) : null}
           </div>
-          <ProjectViewerLazy candidateParts={candidateParts} />
+          <ProjectViewerLazy
+            candidateParts={candidateParts}
+            glbBase64={glbBase64}
+          />
         </section>
 
         <section className="mt-10 flex items-center justify-between gap-3 border-t border-neutral-900 pt-6 text-xs text-neutral-500">

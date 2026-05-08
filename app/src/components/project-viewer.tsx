@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useMemo, useState } from "react";
 import * as THREE from "three";
 import { Canvas, type ThreeEvent } from "@react-three/fiber";
-import { Grid, OrbitControls, Text } from "@react-three/drei";
+import { Bounds, Grid, OrbitControls, Text, useGLTF } from "@react-three/drei";
 import { Bloom, EffectComposer, ToneMapping } from "@react-three/postprocessing";
 import { ToneMappingMode } from "postprocessing";
 import { X } from "lucide-react";
@@ -16,6 +16,7 @@ export type CandidatePart = {
 
 type ProjectViewerProps = {
   candidateParts: CandidatePart[];
+  glbBase64?: string;
 };
 
 const COLOR_BY_TYPE: Record<string, string> = {
@@ -51,15 +52,12 @@ const COLS = 4;
 const SPACING_X = 1.8;
 const SPACING_Z = 1.8;
 
-type RendererMode = "webgl" | "webgpu" | "detecting";
-
-async function buildWebGPURenderer(props: unknown): Promise<unknown> {
-  const mod = (await import("three/webgpu")) as typeof import("three/webgpu");
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const renderer = new mod.WebGPURenderer(props as any);
-  await renderer.init();
-  return renderer;
-}
+// WebGPU detection removed: drei's <Text> uses ShaderMaterial which is
+// incompatible with three's WebGPU/TSL backend (browser console threw
+// "Material 'ShaderMaterial' is not compatible" + drawIndexed errors on
+// the user's tier-1 test). WebGL2 with EffectComposer postprocessing is
+// strictly the better path for this viewer; revisit when drei has
+// first-class WebGPU support.
 
 function PartBox({
   part,
@@ -143,33 +141,44 @@ function useIsMobile(): boolean {
   return mobile;
 }
 
-export function ProjectViewer({ candidateParts }: ProjectViewerProps) {
-  const [selected, setSelected] = useState<CandidatePart | null>(null);
-  const [mode, setMode] = useState<RendererMode>("detecting");
-  const isMobile = useIsMobile();
+function GLBModel({ url }: { url: string }) {
+  const { scene } = useGLTF(url);
+  // Clone so multiple mounts don't share mutable transforms; lazy-clone
+  // on first render keeps drei's cache happy.
+  const cloned = useMemo(() => scene.clone(true), [scene]);
+  return <primitive object={cloned} />;
+}
 
-  // Detect WebGPU once on mount. Falls back to WebGL2 if the navigator
-  // API is missing, requestAdapter returns null, or feature-detect throws.
+function useGlbObjectUrl(glbBase64: string | undefined): string | undefined {
+  const [url, setUrl] = useState<string | undefined>(undefined);
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const gpu: any = (navigator as any).gpu;
-        if (!gpu || typeof gpu.requestAdapter !== "function") {
-          if (!cancelled) setMode("webgl");
-          return;
-        }
-        const adapter = await gpu.requestAdapter();
-        if (!cancelled) setMode(adapter ? "webgpu" : "webgl");
-      } catch {
-        if (!cancelled) setMode("webgl");
-      }
-    })();
+    if (!glbBase64) {
+      setUrl(undefined);
+      return;
+    }
+    const binary = atob(glbBase64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    const blob = new Blob([bytes], { type: "model/gltf-binary" });
+    const objectUrl = URL.createObjectURL(blob);
+    setUrl(objectUrl);
     return () => {
-      cancelled = true;
+      URL.revokeObjectURL(objectUrl);
     };
-  }, []);
+  }, [glbBase64]);
+  return url;
+}
+
+export function ProjectViewer({
+  candidateParts,
+  glbBase64,
+}: ProjectViewerProps) {
+  const [selected, setSelected] = useState<CandidatePart | null>(null);
+  const isMobile = useIsMobile();
+  const glbUrl = useGlbObjectUrl(glbBase64);
+  const showGlb = Boolean(glbUrl);
 
   const positions = useMemo<[number, number, number][]>(() => {
     return candidateParts.map((_, i) => {
@@ -183,7 +192,9 @@ export function ProjectViewer({ candidateParts }: ProjectViewerProps) {
     });
   }, [candidateParts]);
 
-  if (candidateParts.length === 0) {
+  const hasContent = showGlb || candidateParts.length > 0;
+
+  if (!hasContent) {
     return (
       <div className="rounded-2xl border border-dashed border-neutral-800 bg-neutral-900/30 p-10 text-center text-sm text-neutral-400">
         No design to render yet. Run the agent to generate a candidate parts
@@ -192,27 +203,13 @@ export function ProjectViewer({ candidateParts }: ProjectViewerProps) {
     );
   }
 
-  if (mode === "detecting") {
-    return (
-      <div className="flex h-[440px] w-full items-center justify-center rounded-2xl border border-neutral-800 bg-neutral-950 text-sm text-neutral-500">
-        Initializing renderer…
-      </div>
-    );
-  }
-
   return (
     <div className="relative h-[440px] w-full overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-950">
       <Canvas
-        key={mode}
         shadows={!isMobile}
         dpr={isMobile ? [1, 1.5] : [1, 2]}
         camera={{ position: [4, 4, 6], fov: 45 }}
-        gl={
-          mode === "webgpu"
-            ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              (buildWebGPURenderer as any)
-            : { antialias: true, powerPreference: "high-performance" }
-        }
+        gl={{ antialias: true, powerPreference: "high-performance" }}
         onCreated={({ gl }) => {
           gl.toneMapping = THREE.ACESFilmicToneMapping;
           gl.toneMappingExposure = 1.05;
@@ -227,19 +224,27 @@ export function ProjectViewer({ candidateParts }: ProjectViewerProps) {
           shadow-mapSize-width={isMobile ? 512 : 1024}
           shadow-mapSize-height={isMobile ? 512 : 1024}
         />
-        <Suspense fallback={null}>
-          {candidateParts.map((part, i) => (
-            <PartBox
-              key={`${part.mpn ?? "_"}-${i}`}
-              part={part}
-              position={positions[i]}
-              selected={
-                selected?.mpn === part.mpn && selected?.function === part.function
-              }
-              onPick={(p) => setSelected(p)}
-            />
-          ))}
-        </Suspense>
+        {showGlb && glbUrl ? (
+          <Suspense fallback={null}>
+            <Bounds fit clip observe margin={1.2}>
+              <GLBModel url={glbUrl} />
+            </Bounds>
+          </Suspense>
+        ) : (
+          <Suspense fallback={null}>
+            {candidateParts.map((part, i) => (
+              <PartBox
+                key={`${part.mpn ?? "_"}-${i}`}
+                part={part}
+                position={positions[i]}
+                selected={
+                  selected?.mpn === part.mpn && selected?.function === part.function
+                }
+                onPick={(p) => setSelected(p)}
+              />
+            ))}
+          </Suspense>
+        )}
         <Grid
           args={[20, 20]}
           cellSize={0.5}
@@ -254,36 +259,29 @@ export function ProjectViewer({ candidateParts }: ProjectViewerProps) {
           makeDefault
           enableDamping
           dampingFactor={0.08}
-          minDistance={3}
-          maxDistance={20}
+          minDistance={1}
+          maxDistance={50}
           target={[0, 0, 0]}
         />
-        {mode === "webgl" ? (
-          <EffectComposer multisampling={isMobile ? 0 : 4}>
-            <Bloom
-              intensity={0.7}
-              luminanceThreshold={0.3}
-              luminanceSmoothing={0.6}
-              mipmapBlur
-            />
-            <ToneMapping mode={ToneMappingMode.ACES_FILMIC} />
-          </EffectComposer>
-        ) : null}
+        <EffectComposer multisampling={isMobile ? 0 : 4}>
+          <Bloom
+            intensity={0.7}
+            luminanceThreshold={0.3}
+            luminanceSmoothing={0.6}
+            mipmapBlur
+          />
+          <ToneMapping mode={ToneMappingMode.ACES_FILMIC} />
+        </EffectComposer>
       </Canvas>
 
       <div className="pointer-events-none absolute left-4 top-4 flex items-center gap-2">
         <span className="rounded-full border border-white/10 bg-black/40 px-3 py-1 text-xs text-neutral-300 backdrop-blur">
-          Placeholder geometry · {candidateParts.length} part
-          {candidateParts.length === 1 ? "" : "s"}
+          {showGlb
+            ? "Mechanical CAD geometry (build123d STEP -> GLB)"
+            : `Placeholder geometry · ${candidateParts.length} part${candidateParts.length === 1 ? "" : "s"}`}
         </span>
-        <span
-          className={
-            mode === "webgpu"
-              ? "rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-[10px] uppercase tracking-wider text-emerald-300 backdrop-blur"
-              : "rounded-full border border-white/10 bg-black/40 px-2.5 py-1 text-[10px] uppercase tracking-wider text-neutral-400 backdrop-blur"
-          }
-        >
-          {mode === "webgpu" ? "WebGPU" : "WebGL2"}
+        <span className="rounded-full border border-white/10 bg-black/40 px-2.5 py-1 text-[10px] uppercase tracking-wider text-neutral-400 backdrop-blur">
+          WebGL2
         </span>
       </div>
 
