@@ -18,7 +18,13 @@ class Settings(BaseSettings):
     agent_port: int = 8001
 
     primary_model: str = "claude-sonnet-4-6"
-    research_model: str = "claude-opus-4-7"
+    # Sonnet 4.6 for the tool-use research loop — Opus 4.7 was costing
+    # ~$2/run because Opus pricing × growing tool_result history × up to
+    # 8 iterations. Sonnet 4.6 cuts inference cost to ~60% (Opus 4.7 is
+    # $5/$25 per 1M; Sonnet 4.6 is $3/$15) and handles the short-horizon
+    # tool-picking task well. Pair with prompt caching in tools.py for
+    # the rest of the savings.
+    research_model: str = "claude-sonnet-4-6"
     planner_max_tokens: int = 1024
     designer_max_tokens: int = 2048
     research_max_tokens: int = 4096

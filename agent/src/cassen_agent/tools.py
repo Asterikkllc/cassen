@@ -110,6 +110,20 @@ async def run_tool_using_loop(
             system=system,
             tools=anthropic_tools,
             messages=messages,
+            # Top-level auto-caching: the SDK places one cache_control
+            # breakpoint on the last cacheable block of the request,
+            # which is the most recent user-turn block (tool_result on
+            # iter 2+, the initial prompt on iter 1). Caching is prefix-
+            # based, so the breakpoint covers tools -> system -> all
+            # prior assistant/user turns. From iteration 2 onward the
+            # request reads ~80%+ of its input tokens at ~0.1x cost
+            # instead of paying full price each time.
+            #
+            # Sonnet 4.6's minimum cacheable prefix is 2048 tokens, so
+            # iteration 1 (system + tools + initial prompt ≈ 1500 tok)
+            # silently doesn't cache. The first cache write happens on
+            # iter 2 once the first tool_result lands; iters 3+ read it.
+            cache_control={"type": "ephemeral"},
         )
 
         text_chunk = _extract_text(msg.content)
