@@ -12,6 +12,7 @@ import {
   getMyProject,
 } from "@/app/actions/projects";
 import type { CandidatePart } from "@/components/project-viewer";
+import type { NodeSnapshot, ToolCall } from "@/components/agent-run";
 
 export const dynamic = "force-dynamic";
 
@@ -66,6 +67,80 @@ function extractGlbBase64(
   return typeof glb === "string" && glb.length > 0 ? glb : undefined;
 }
 
+function callsFromResearch(raw: unknown): ToolCall[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((c): c is Record<string, unknown> => c !== null && typeof c === "object")
+    .map((c) => ({
+      id: typeof c.id === "string" ? c.id : crypto.randomUUID(),
+      name: typeof c.name === "string" ? c.name : "tool",
+      input: c.input,
+      output_text:
+        typeof c.output_text === "string" ? c.output_text : undefined,
+      is_error: c.is_error === true,
+      error: typeof c.error === "string" ? c.error : undefined,
+      status: c.is_error === true ? "error" : c.error ? "error" : "done",
+    }));
+}
+
+function nodeFromResearch(
+  nodeName: string,
+  raw: unknown,
+): NodeSnapshot | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const r = raw as Record<string, unknown>;
+  const text = typeof r.final_text === "string" ? r.final_text : "";
+  const toolCalls = callsFromResearch(r.calls);
+  if (!text && toolCalls.length === 0) return undefined;
+  return { node: nodeName, text, toolCalls, done: true };
+}
+
+function extractNodes(
+  snapshot: Record<string, unknown> | undefined,
+): NodeSnapshot[] {
+  if (!snapshot) return [];
+  const out: NodeSnapshot[] = [];
+
+  const plannerText =
+    typeof snapshot.planner_output === "string" ? snapshot.planner_output : "";
+  if (plannerText) {
+    out.push({ node: "planner", text: plannerText, toolCalls: [], done: true });
+  }
+
+  const research =
+    (snapshot.research as Record<string, unknown> | undefined) ?? {};
+
+  const elec = nodeFromResearch("electronics_research", research.electronics);
+  if (elec) out.push(elec);
+
+  const mechHw = nodeFromResearch(
+    "mechanical_research",
+    research.mechanical_research,
+  );
+  if (mechHw) out.push(mechHw);
+
+  const mechDesign = nodeFromResearch("mechanical_design", research.mechanical);
+  if (mechDesign) out.push(mechDesign);
+
+  const fluids = nodeFromResearch("fluids_research", research.fluids);
+  if (fluids) out.push(fluids);
+
+  const designerText =
+    typeof snapshot.designer_output === "string"
+      ? snapshot.designer_output
+      : "";
+  if (designerText) {
+    out.push({
+      node: "designer",
+      text: designerText,
+      toolCalls: [],
+      done: true,
+    });
+  }
+
+  return out;
+}
+
 export default async function ProjectDetailPage({
   params,
 }: {
@@ -79,12 +154,14 @@ export default async function ProjectDetailPage({
   const snapshot = await getLatestSnapshot(project.id);
   const candidateParts = extractCandidateParts(snapshot?.snapshot);
   const glbBase64 = extractGlbBase64(snapshot?.snapshot);
+  const initialNodes = extractNodes(snapshot?.snapshot);
   // Debug: surface what's coming back from the DB for this project so
   // viewer-vs-snapshot mismatches are visible in next dev's terminal.
   console.log(
     `[project-detail] project=${project.id} snapshot_id=${snapshot?.id ?? "none"} ` +
       `candidate_parts=${candidateParts.length} ` +
       `glb_b64=${glbBase64 ? `present (${glbBase64.length} chars)` : "absent"} ` +
+      `nodes=${initialNodes.length} ` +
       `created_at=${snapshot?.created_at ?? "n/a"}`,
   );
 
@@ -128,7 +205,10 @@ export default async function ProjectDetailPage({
             Agent run
           </p>
           <div className="mt-4">
-            <AgentRun projectId={project.id} />
+            <AgentRun
+              projectId={project.id}
+              initialNodes={initialNodes}
+            />
           </div>
         </section>
 

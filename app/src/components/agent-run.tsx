@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
-type ToolCall = {
+export type ToolCall = {
   id: string;
   name: string;
   input?: unknown;
@@ -20,6 +20,13 @@ type ToolCall = {
   is_error?: boolean;
   error?: string;
   status: "running" | "done" | "error";
+};
+
+export type NodeSnapshot = {
+  node: string;
+  text: string;
+  toolCalls: ToolCall[];
+  done: boolean;
 };
 
 type RunEvent =
@@ -50,25 +57,35 @@ type RunEvent =
   | { kind: "complete"; node?: string | null; data: { status: string } }
   | { kind: "error"; node?: string | null; data: { message: string } };
 
-type NodeBuffer = {
-  node: string;
-  text: string;
-  toolCalls: ToolCall[];
-  done: boolean;
-};
+type NodeBuffer = NodeSnapshot;
 
 type Status = "idle" | "running" | "done" | "error";
 
 const NODE_LABEL: Record<string, string> = {
   planner: "Planning",
   electronics_research: "Researching electronics",
+  mechanical_research: "Researching mechanical hardware",
+  mechanical_design: "Designing CAD geometry",
+  fluids_research: "Researching fluid system",
   designer: "Designing",
 };
 
-export function AgentRun({ projectId }: { projectId: string }) {
-  const [status, setStatus] = useState<Status>("idle");
+export function AgentRun({
+  projectId,
+  initialNodes = [],
+}: {
+  projectId: string;
+  initialNodes?: NodeSnapshot[];
+}) {
+  // Hydrate from the persisted project_versions snapshot on mount so
+  // navigating away and back doesn't wipe what the agent already
+  // produced. Live streaming (when user clicks "Run again") replaces
+  // these via setNodes([]) at the top of start().
+  const [status, setStatus] = useState<Status>(
+    initialNodes.length > 0 ? "done" : "idle",
+  );
   const [error, setError] = useState<string | null>(null);
-  const [nodes, setNodes] = useState<NodeBuffer[]>([]);
+  const [nodes, setNodes] = useState<NodeBuffer[]>(initialNodes);
   const abortRef = useRef<AbortController | null>(null);
 
   const updateNode = useCallback(
