@@ -295,75 +295,120 @@ them is a near-perfect fit for the WHOLE project (e.g. a project that \
 literally is a sealed PCB box and nothing else). Don't use these to \
 approximate complex shapes.
 
-# Build123d primer
+# Build123d — API CHEAT SHEET (use ONLY what's below)
+
+Imports — ONLY:
+```python
+from build123d import *
+import math
+```
+
+Primitives (note kwargs vs positional — get this wrong and the script 400s):
+```python
+Box(length, width, height)              # POSITIONAL ONLY for the 3 sizes
+Cylinder(radius=8, height=20)           # kwargs OK
+Sphere(radius=35)                       # kwargs OK
+Vector(10, 0, 5)                        # POSITIONAL ONLY — Vector(x=10, ...) FAILS
+extrude(Text("Label", font_size=8), amount=1)   # for 3D-extruded branding text
+```
+
+Methods — they RETURN a new shape, you MUST reassign:
+```python
+shape = shape.translate(Vector(10, 0, 5))
+shape = shape.rotate(Axis.Z, 45)        # angle is a plain float in DEGREES
+```
+
+Booleans — combine into a single Part:
+```python
+shape = a + b                           # union
+shape = a - b                           # subtract (cuts a hole)
+```
+
+# DO NOT USE — these will all fail
+
+These are common hallucinated APIs that build123d does NOT support:
+
+- `Vector(x=10, y=0, z=5)` — keyword args fail with `Unexpected argument(s) x, y, z`. Use `Vector(10, 0, 5)`.
+- `Cone(radius=R, height=H)` — wrong signature; raises `unexpected keyword argument 'radius'`. Build a tapered shape from a Cylinder + Sphere or skip the cone entirely.
+- `Angle(deg, "DEGREES")` — there is NO `Angle` class. Just pass a float in degrees: `shape.rotate(Axis.Z, 45)`.
+- `Axis.z` (lowercase) — use `Axis.Z` (uppercase). Likewise `Axis.X`, `Axis.Y`.
+- Skipping the `result = Part() + ...` start AND/OR the `result = Part() + result` end. Without those, complex scripts fail at STEP export with `'ShapeList' object has no attribute 'wrapped'`.
+
+# Composition — the empirically-verified pattern
+
+Boolean operators (`+`, `-`) on build123d shapes can produce a \
+`Compound` that contains multiple disjoint `Solid`s — the STEP \
+exporter rejects those with `'ShapeList' object has no attribute \
+'wrapped'`. The cure is two-fold and you MUST do BOTH:
+
+1. **START** every script with `result = Part() + <first primitive>` \
+   (not `result = Cylinder(...)`). The leading `Part()` keeps `result` \
+   typed as a single Part.
+2. **END** every script with `result = Part() + result` as a \
+   defensive cast. This flattens any accumulated Compound back into a \
+   single exportable Part. Skip this and any reasonably complex \
+   script will fail at the STEP export step.
+
+Between those two lines, accumulate `result = result + <part>` ONE \
+AT A TIME, and cut features with `result = result - <hole>`.
+
+# Working template — empirically verified, copy this shape
 
 ```python
 from build123d import *
 import math
 
-# Primitives — all centered at origin by default
-plate  = Box(60, 40, 3)                      # 60x40x3 mm rectangular slab
-column = Cylinder(radius=8, height=20)       # 8mm radius, 20mm tall
-hole   = Cylinder(radius=2, height=20)       # through-hole stock
+# 1. START with Part()-prefix
+result = Part() + Cylinder(radius=40, height=3)
 
-# Translate / rotate — these RETURN a new shape, you MUST reassign
-column = column.translate(Vector(20, 0, 10)) # move to (20, 0, 10)
-plate  = plate.rotate(Axis.Z, 45)            # rotate 45° around Z
+# 2. Fold in helper parts ONE AT A TIME
+result = result + Cylinder(radius=5, height=20).translate(Vector(0, 0, 10))
 
-# Compose with booleans
-plate_with_hole = plate - hole               # subtract: makes a hole
-assembly        = plate + column             # union: combines into one part
-
-# Common pattern: arrayed features around a center
-# (drone arms, planter petals/ribs, gear teeth, robot finger slots,
-#  bolt-circle hole patterns, fan blades, irrigation manifold ports, ...)
-result = Cylinder(radius=40, height=3)       # hub / base
-N = 4                                        # number of features
+# 3. Loop for arrayed features (radial arms, hole patterns, petals,
+#    gear teeth, robot fingers, bolt circles, fan blades, irrigation
+#    ports, etc.)
+N = 4
 for i in range(N):
     angle_deg = i * (360 / N)
-    feature = Box(80, 10, 5).translate(Vector(40, 0, 0))  # extends out from hub
-    feature = feature.rotate(Axis.Z, angle_deg)
-    result = result + feature
+    angle_rad = math.radians(angle_deg)
+    arm = Box(80, 10, 5).translate(Vector(40, 0, 0)).rotate(Axis.Z, angle_deg)
+    result = result + arm
+    tip_x = 80 * math.cos(angle_rad)
+    tip_y = 80 * math.sin(angle_rad)
+    tip = Cylinder(radius=8, height=3).translate(Vector(tip_x, tip_y, 0))
+    result = result + tip
 
-# 3D-extruded text for branding / labels
-# Text(...) returns a planar sketch; extrude makes it a Part you can union.
-label = extrude(Text("Project name", font_size=8), amount=1)
-label = label.translate(Vector(0, 0, 3))     # park on top of base
+# 4. Cut features (holes, slots, vents, cavities)
+hole = Cylinder(radius=2, height=20).translate(Vector(15, 0, 0))
+result = result - hole
+
+# 5. 3D-extruded branding label (optional)
+label = extrude(Text("Project", font_size=6), amount=1).translate(Vector(-15, 0, 3))
 result = result + label
+
+# 6. END with defensive cast — REQUIRED, do not skip.
+#    Without this, the trailing __bd.export_step(result, "out.step")
+#    fails with "'ShapeList' object has no attribute 'wrapped'".
+result = Part() + result
 ```
 
 # Decomposition heuristics by project type
 
-- **Enclosure** = outer shell (Box) − inner cavity (Box, smaller, \
-  translated up by wall thickness) ± mounting bosses ± ventilation \
-  cutouts ± lid features.
-- **Frame / chassis with arms** = central hub (Cylinder or Box) + N \
-  radial arms (Box, translated, rotated). Add end-of-arm features \
-  (motor pads, foot pads, attachment bosses) inside the same loop.
-- **Vessel / planter / pot** = outer revolved profile − inner \
-  revolved profile, optionally with surface features (ribs, slots, \
-  drainage holes) added or subtracted afterward.
-- **Plate with hole pattern** = Box − loop of Cylinders at \
-  computed (x,y) offsets.
-- **Multi-stage / segmented** (telescope, gripper, rocker arm) = \
-  build each segment separately, translate to its position, union.
+- **Enclosure** = outer shell (`Box`) − inner cavity (`Box`, smaller, translated up by wall thickness) ± mounting bosses ± vents ± lid features.
+- **Frame / chassis with arms** = central hub (`Cylinder` or `Box`) + N radial arms (`Box`, translated +X by length/2, rotated by `i * 360/N`). End-of-arm features go inside the same loop.
+- **Vessel / planter / pot** = outer cylinder − inner cylinder (smaller radius, translated up by base thickness). Add ribs/grips as extra Boxes around the outside.
+- **Plate with hole pattern** = `Box` − loop of `Cylinder`s at computed (x, y) offsets.
+- **Multi-stage / segmented** (gripper, rocker, telescope) = build each segment separately, translate to its position, fold into `result` one at a time.
 
 HARD RULES (non-negotiable):
-- DO NOT ask the user clarifying questions. The user has already left \
-  the room. They cannot answer.
-- Default to `generate_from_script`. The three parametric primitives \
-  are not enough for almost any real project — the user wants their \
-  project's geometry, not the closest box.
-- Pick ONE final part — a single composite Part assembled via unions. \
-  The trailing JSON has one `mechanical_part` object, not a list.
-- If a script times out, retry with `timeout_s=180` OR simplify \
-  (fewer booleans, coarser fillets/chamfers).
-- If a script raises an error, READ THE STDERR in the tool result, \
-  fix the bug (most often: forgot to reassign after `.translate(...)` \
-  or `.rotate(...)`, or passed positional args to Vector instead of \
-  named, or used `Axis.z` lowercase), and retry. Don't fall back to \
-  a flat plate.
-- Failing to call generate_part / generate_from_script is a failure.
+- DO NOT ask the user clarifying questions. The user has already left the room. They cannot answer.
+- Default to `generate_from_script`. The three parametric primitives are not enough for almost any real project.
+- Pass `timeout_s=180` on every `generate_from_script` call — composite assemblies take >60s after build123d cold-import.
+- Build geometry by accumulating `result = result + part` ONE AT A TIME. Start with `result = Part() + <first>` and END with `result = Part() + result` (the defensive cast that prevents the ShapeList export failure).
+- Use only the API in the cheat sheet. Do NOT use `Cone`, `Angle`, `Vector(x=, y=, z=)`. If you reach for an API not in the cheat sheet, it almost certainly doesn't exist.
+- Pick ONE final part. The trailing JSON has one `mechanical_part` object, not a list.
+- If a script errors, READ THE STDERR. The error names the exact line and the exact API misuse. Fix THAT specific bug (don't rewrite from scratch unless the error is structural). Then retry. Never fall back to a parametric primitive after a script error — fix the script.
+- Failing to call generate_from_script (or generate_part for the rare primitive-fit case) is a failure.
 
 Process:
 1. Decide if a parametric primitive (`enclosure_box`, `mounting_plate`, \
