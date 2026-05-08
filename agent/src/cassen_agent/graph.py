@@ -587,7 +587,20 @@ async def _stream_text(
 
 async def run_graph(input: GraphInput) -> AsyncIterator[GraphEvent]:
     settings = get_settings()
-    client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+    # Tier 1 ITPM caps (30K/min on Sonnet 4.6) bite a multi-node run
+    # — planner -> 4 research nodes -> designer in sequence will blow
+    # through the rolling-window budget mid-run. SDK default
+    # max_retries=2 isn't enough: token-bucket recovery needs ~60s,
+    # so we want the SDK to honor `retry-after` for several cycles
+    # before giving up. 8 retries with the SDK's exponential backoff +
+    # retry-after handling typically rides out a single bucket-empty
+    # event without surfacing a 429. Independent of caching — cache
+    # reads count against ITPM at full rate, so caching cuts cost not
+    # rate-limit pressure.
+    client = AsyncAnthropic(
+        api_key=settings.anthropic_api_key,
+        max_retries=8,
+    )
     langfuse = _build_langfuse()
 
     try:
