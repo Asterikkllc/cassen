@@ -30,7 +30,7 @@ create table if not exists public.projects (
     check (char_length(prompt) between 1 and 8000),
   constraint projects_status_chk
     check (status in (
-      'draft', 'planning', 'designing', 'simulating',
+      'draft', 'planning', 'researching', 'designing', 'simulating',
       'sourcing', 'fabricating', 'assembled', 'shipped',
       'archived', 'failed'
     )),

@@ -775,7 +775,11 @@ async def run_graph(input: GraphInput) -> AsyncIterator[GraphEvent]:
                 # catalog before CAD generation, so mechanical_design
                 # can size geometry against real part dimensions.
                 if "mechanical" in domains and settings.mcp_mechanical_path:
-                    update_project_status(input.project_id, "researching-mechanical")
+                    # DB schema's projects_status_chk only allows the
+                    # coarse-grained set (draft/planning/researching/
+                    # designing/...). The fine-grained "phase" lives in
+                    # the SSE event below for UI display.
+                    update_project_status(input.project_id, "researching")
                     yield GraphEvent(
                         kind="status", data={"status": "researching-mechanical"}
                     )
@@ -892,7 +896,7 @@ async def run_graph(input: GraphInput) -> AsyncIterator[GraphEvent]:
 
                 # ---- mechanical design (conditional) ---------------------
                 if "mechanical" in domains and settings.mcp_cad_path:
-                    update_project_status(input.project_id, "designing-mechanical")
+                    update_project_status(input.project_id, "designing")
                     yield GraphEvent(
                         kind="status", data={"status": "designing-mechanical"}
                     )
@@ -1044,7 +1048,7 @@ async def run_graph(input: GraphInput) -> AsyncIterator[GraphEvent]:
 
                 # ---- fluids research (conditional) -----------------------
                 if "fluids" in domains and settings.mcp_fluids_path:
-                    update_project_status(input.project_id, "researching-fluids")
+                    update_project_status(input.project_id, "researching")
                     yield GraphEvent(
                         kind="status", data={"status": "researching-fluids"}
                     )
