@@ -630,10 +630,12 @@ async def run_graph(input: GraphInput) -> AsyncIterator[GraphEvent]:
                             yield GraphEvent(kind="token", node="planner", data=chunk)
                         elif kind == "full":
                             plan_text = chunk
-                            try:
-                                plan_parsed = json.loads(plan_text.strip().strip("`"))
-                            except Exception:  # noqa: BLE001
-                                plan_parsed = None
+                            # Claude often wraps the JSON in a ```json ... ```
+                            # fence even when told not to. _extract_trailing_json
+                            # walks back from the last `}` to a balanced `{`,
+                            # which finds the JSON regardless of fences or
+                            # surrounding prose.
+                            plan_parsed = _extract_trailing_json(plan_text)
                             yield GraphEvent(
                                 kind="node-end",
                                 node="planner",
@@ -684,6 +686,12 @@ async def run_graph(input: GraphInput) -> AsyncIterator[GraphEvent]:
                                     "-m",
                                     "cassen_electronics.server",
                                 ],
+                                # pydantic-settings resolves env_file relative
+                                # to CWD; without cwd= the subprocess inherits
+                                # agent/'s CWD and never reads
+                                # mcp-electronics/.env (where distributor keys
+                                # live). Same fix applied to every MCP spawn.
+                                cwd=settings.mcp_electronics_path,
                             ) as session:
                                 async for event_kind, payload in run_tool_using_loop(
                                     client=client,
@@ -803,6 +811,7 @@ async def run_graph(input: GraphInput) -> AsyncIterator[GraphEvent]:
                                     "-m",
                                     "cassen_mechanical.server",
                                 ],
+                                cwd=settings.mcp_mechanical_path,
                             ) as session:
                                 async for event_kind, payload in run_tool_using_loop(
                                     client=client,
@@ -941,6 +950,7 @@ async def run_graph(input: GraphInput) -> AsyncIterator[GraphEvent]:
                                     "-m",
                                     "cassen_cad_mcp.server",
                                 ],
+                                cwd=settings.mcp_cad_path,
                             ) as session:
                                 async for event_kind, payload in run_tool_using_loop(
                                     client=client,
@@ -1070,6 +1080,7 @@ async def run_graph(input: GraphInput) -> AsyncIterator[GraphEvent]:
                                     "-m",
                                     "cassen_fluids.server",
                                 ],
+                                cwd=settings.mcp_fluids_path,
                             ) as session:
                                 async for event_kind, payload in run_tool_using_loop(
                                     client=client,
