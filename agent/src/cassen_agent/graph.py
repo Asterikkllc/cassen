@@ -1433,6 +1433,20 @@ async def run_graph(input: GraphInput) -> AsyncIterator[GraphEvent]:
                     "bom_source": bom_source,
                 }
 
+                # Surface what's actually going to disk so we can debug
+                # "viewer shows old data" disconnects from the agent logs.
+                _elec = research_for_snapshot.get("electronics") or {}
+                _mech = research_for_snapshot.get("mechanical") or {}
+                _candidate_parts = _elec.get("candidate_parts") if isinstance(_elec, dict) else None
+                _glb = _mech.get("glb_b64") if isinstance(_mech, dict) else None
+                print(
+                    f"[agent] snapshot summary for project={input.project_id}: "
+                    f"candidate_parts={len(_candidate_parts) if isinstance(_candidate_parts, list) else 'absent'}, "
+                    f"glb_b64={'present (' + str(len(_glb)) + ' chars)' if isinstance(_glb, str) else 'absent'}, "
+                    f"bom_rows={len(bom)}, bom_source={bom_source}",
+                    file=sys.stderr,
+                )
+
                 # Emit the in-memory artifact BEFORE persistence so the
                 # client never loses the result if the snapshot insert
                 # flakes. Persistence failures get their own event and

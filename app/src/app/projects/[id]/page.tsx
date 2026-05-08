@@ -79,6 +79,14 @@ export default async function ProjectDetailPage({
   const snapshot = await getLatestSnapshot(project.id);
   const candidateParts = extractCandidateParts(snapshot?.snapshot);
   const glbBase64 = extractGlbBase64(snapshot?.snapshot);
+  // Debug: surface what's coming back from the DB for this project so
+  // viewer-vs-snapshot mismatches are visible in next dev's terminal.
+  console.log(
+    `[project-detail] project=${project.id} snapshot_id=${snapshot?.id ?? "none"} ` +
+      `candidate_parts=${candidateParts.length} ` +
+      `glb_b64=${glbBase64 ? `present (${glbBase64.length} chars)` : "absent"} ` +
+      `created_at=${snapshot?.created_at ?? "n/a"}`,
+  );
 
   return (
     <>
