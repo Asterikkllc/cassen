@@ -70,10 +70,17 @@ DESIGNER_SYSTEM = """You are the Cassen designer. Synthesize the planner's \
 decomposition and the researchers' findings into ONE coherent first-pass design.
 
 Inputs you may receive (any subset):
-- Electronics research findings (real MPNs from Digi-Key/Mouser/Nexar).
+- Electronics picks (real MPNs from Digi-Key/Mouser/Nexar).
 - Mechanical hardware selections (DIN/ISO/ANSI part IDs from the curated catalog).
 - Mechanical CAD selection (a parametric template + dimensions + STEP geometry).
 - Fluid-system selections (pumps/valves/tubing/fittings part IDs from the curated catalog).
+
+If the input says "NO_GROUNDED_PARTS" or "NO_GROUNDED_MPN" for a domain, \
+the researcher returned nothing for that domain. You MUST then output \
+id="NO_GROUNDED_MPN" (electronics) or id="NO_GROUNDED_PART" (mechanical/fluids) \
+for every line item in that domain. **Never** fabricate an MPN, part_id, \
+or supplier name to fill the gap. Hallucinated identifiers ship to a real \
+sourcing pipeline and break it — a placeholder is always better.
 
 Your output, plain markdown, no preamble:
 
@@ -82,7 +89,9 @@ Your output, plain markdown, no preamble:
 A flat list of every part the design needs, ordered by domain (electronics, then \
 mechanical hardware, then mechanical CAD geometry, then fluids). For each item:
 - The exact identifier the researcher returned (MPN for electronics, part_id for \
-  mechanical/fluids, template+inputs for CAD geometry). NEVER invent identifiers.
+  mechanical/fluids, template+inputs for CAD geometry). If research returned \
+  nothing for a domain, write the literal placeholder shown above. NEVER \
+  invent identifiers.
 - One-line rationale tied to the project's actual needs.
 
 ## Cross-domain checks
@@ -124,15 +133,27 @@ valves, tubing, fittings) in real, sourceable parts. Tools:
   useful for noun phrases like 'water a planter on a 12V line' or \
   'shut off air supply on power loss'.
 
+HARD RULES (non-negotiable):
+- DO NOT ask the user clarifying questions. The user has already left the \
+  room. They cannot answer.
+- DO NOT stall waiting for confirmation. Make reasonable assumptions and \
+  proceed.
+- State your assumptions in 1-3 bullets at the top, then IMMEDIATELY \
+  start calling tools.
+- Failing to call any tool is a failure. You MUST end with the trailing \
+  JSON object below.
+
 Process:
-1. Identify the project's fluid needs (move water? dispense precisely? \
+1. State your assumptions briefly (e.g. "Assuming 12V rail, 6 mm silicone \
+   tubing, gravity-fed reservoir").
+2. Identify the project's fluid needs (move water? dispense precisely? \
    actuate pneumatic cylinders? shut off on power loss?).
-2. For each need, call recommend_for_function or search_part to find \
+3. For each need, call recommend_for_function or search_part to find \
    candidates, then get_part for the chosen id.
-3. Pay attention to compatibility: pump port (1/2 BSP, 6 mm barb) must \
+4. Pay attention to compatibility: pump port (1/2 BSP, 6 mm barb) must \
    match the tubing OD/ID and the fittings; voltage must match the \
    project's power rail; max_pressure must exceed expected head.
-4. End your turn with a compact JSON summary:
+5. End your turn with a compact JSON summary:
    {
      "fluid_picks": [
        { "function": "move water from reservoir to soil", "part_id": "...", "rationale": "..." },
@@ -160,13 +181,25 @@ real, sourceable parts BEFORE any CAD geometry is generated. Tools:
   when you know the function ('mount PCB', 'vibration-resistant nut', \
   'linear motion') but not the specific spec.
 
+HARD RULES (non-negotiable):
+- DO NOT ask the user clarifying questions. The user has already left the \
+  room. They cannot answer.
+- DO NOT stall waiting for confirmation. Make reasonable assumptions and \
+  proceed.
+- State your assumptions in 1-3 bullets at the top, then IMMEDIATELY \
+  start calling tools.
+- Failing to call any tool is a failure. You MUST end with the trailing \
+  JSON object below.
+
 Process:
-1. Identify the project's mechanical needs (assembly fasteners? \
+1. State your assumptions briefly (e.g. "Assuming 3D-printed enclosure, \
+   M3 fasteners throughout, no extrusion frame").
+2. Identify the project's mechanical needs (assembly fasteners? \
    structural extrusion? bearings? standoffs?).
-2. For each need, call recommend_for_function to discover candidates, \
+3. For each need, call recommend_for_function to discover candidates, \
    then get_part for the one you choose. Use search_part when you \
    already have a size in mind.
-3. End your turn with a compact JSON summary:
+4. End your turn with a compact JSON summary:
    {
      "mechanical_picks": [
        { "function": "mount PCB to enclosure", "part_id": "...", "rationale": "..." },
@@ -193,6 +226,14 @@ ships (enclosure_box, mounting_plate, bracket_l, ...) with input JSON Schemas.
 build123d script in a sandbox. Use this only when no template fits. \
 The script must end with `result = <build123d shape>`. Imports allowed: \
 `build123d`, `math`. No `os`, `subprocess`, `socket`, etc.
+
+HARD RULES (non-negotiable):
+- DO NOT ask the user clarifying questions. The user has already left the \
+  room. They cannot answer.
+- Pick ONE template (or one custom script) and generate it. The trailing \
+  JSON has a single `mechanical_part` object, NOT a list — do not return \
+  multiple parts joined by commas.
+- Failing to call generate_part / generate_from_script is a failure.
 
 Process:
 1. Call list_parametric_templates first to learn what's available.
@@ -227,14 +268,26 @@ Mouser). Use them to ground every electronic component choice in a real, \
 available MPN. Tool results carry a `source` field so you can see which \
 distributor produced each row, plus an `attempts` array showing the chain.
 
+HARD RULES (non-negotiable):
+- DO NOT ask the user clarifying questions. The user has already left the \
+  room. They cannot answer.
+- DO NOT stall waiting for confirmation. Make reasonable assumptions and \
+  proceed.
+- State your assumptions in 2-4 bullets at the top of your response, then \
+  IMMEDIATELY start calling tools.
+- Failing to call any tool is a failure. You MUST end with the trailing \
+  JSON object below, populated from real tool results.
+
 Process:
-1. Identify the electronic functions the project needs (MCU, sensors, power, \
-   communication, drivers/actuators).
-2. For each function, call search_part to discover candidates, then get_part \
+1. State your assumptions briefly (e.g. "Assuming quadcopter, 4S LiPo, \
+   ~$600 budget, autonomous + manual fallback").
+2. Identify the electronic functions the project needs (MCU, sensors, power, \
+   communication, drivers/actuators) — typically 5-8 functions.
+3. For each function, call search_part to discover candidates, then get_part \
    for top picks. Use recommend_alternative when the obvious first choice has \
    tradeoffs worth mentioning.
-3. Pick one MPN per function. Note tradeoffs in one sentence.
-4. End your turn with a compact JSON object summarizing your picks:
+4. Pick one MPN per function. Note tradeoffs in one sentence.
+5. End your turn with a compact JSON object summarizing your picks:
    {
      "candidate_parts": [
        { "function": "...", "mpn": "...", "rationale": "..." },
@@ -1181,12 +1234,27 @@ async def run_graph(input: GraphInput) -> AsyncIterator[GraphEvent]:
                 yield GraphEvent(kind="status", data={"status": "designing"})
                 yield GraphEvent(kind="node-start", node="designer")
 
+                # Build the research block. Only inject FINDINGS when a node
+                # produced structured picks; if a node ran but produced
+                # nothing (e.g. asked clarifying questions instead of
+                # calling tools), inject a FAILURE marker so the designer
+                # doesn't read prose research and fabricate identifiers
+                # to fill the void.
                 research_block = ""
                 electronics_research = research_outputs.get("electronics")
-                if electronics_research and electronics_research.get("final_text"):
-                    research_block = (
-                        f"\nElectronics research findings:\n"
-                        f"{electronics_research['final_text']}\n"
+                if electronics_research and electronics_research.get("candidate_parts"):
+                    research_block += "\nElectronics picks (grounded by live distributors):\n"
+                    for p in electronics_research["candidate_parts"]:
+                        research_block += (
+                            f"- {p.get('mpn')}: {p.get('function')}"
+                            f" — {p.get('rationale','')}\n"
+                        )
+                elif "electronics" in domains:
+                    research_block += (
+                        "\nElectronics research: NO_GROUNDED_PARTS. The "
+                        "researcher returned no MPNs. Mark every electronic "
+                        "line item in the BoM as id=\"NO_GROUNDED_MPN\" — "
+                        "do NOT invent MPNs.\n"
                     )
 
                 mechanical_hw = research_outputs.get("mechanical_research")
@@ -1197,6 +1265,12 @@ async def run_graph(input: GraphInput) -> AsyncIterator[GraphEvent]:
                             f"- {p.get('part_id')}: {p.get('function')}"
                             f" — {p.get('rationale','')}\n"
                         )
+                elif "mechanical" in domains:
+                    research_block += (
+                        "\nMechanical hardware research: NO_GROUNDED_PARTS. "
+                        "Mark every mechanical hardware line item as "
+                        "id=\"NO_GROUNDED_PART\" — do NOT invent part_ids.\n"
+                    )
 
                 fluids_research = research_outputs.get("fluids")
                 if fluids_research and fluids_research.get("picks"):
@@ -1206,6 +1280,11 @@ async def run_graph(input: GraphInput) -> AsyncIterator[GraphEvent]:
                             f"- {p.get('part_id')}: {p.get('function')}"
                             f" — {p.get('rationale','')}\n"
                         )
+                elif "fluids" in domains:
+                    research_block += (
+                        "\nFluids research: NO_GROUNDED_PARTS. Mark every "
+                        "fluid line item as id=\"NO_GROUNDED_PART\".\n"
+                    )
 
                 mechanical_design = research_outputs.get("mechanical")
                 if mechanical_design and mechanical_design.get("pick"):
