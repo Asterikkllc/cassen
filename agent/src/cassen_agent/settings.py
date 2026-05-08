@@ -18,13 +18,20 @@ class Settings(BaseSettings):
     agent_port: int = 8001
 
     primary_model: str = "claude-sonnet-4-6"
-    # Sonnet 4.6 for the tool-use research loop — Opus 4.7 was costing
-    # ~$2/run because Opus pricing × growing tool_result history × up to
-    # 8 iterations. Sonnet 4.6 cuts inference cost to ~60% (Opus 4.7 is
-    # $5/$25 per 1M; Sonnet 4.6 is $3/$15) and handles the short-horizon
-    # tool-picking task well. Pair with prompt caching in tools.py for
-    # the rest of the savings.
-    research_model: str = "claude-sonnet-4-6"
+    # Haiku 4.5 for the tool-use research loop. Three reasons:
+    # (1) Highest tier-1 ITPM headroom of the three models — 50K
+    #     vs Sonnet's 30K vs Opus's 500K. With ~30-40K fresh
+    #     input tokens per multi-domain run, Sonnet 4.6 is right
+    #     at the cap and prone to 429s; Haiku has comfortable
+    #     headroom; Opus is overkill on rate but expensive.
+    # (2) Cheapest by ~3x ($1/$5 per 1M vs Sonnet's $3/$15) —
+    #     research nodes are pure tool-picking against a curated
+    #     catalog or live distributor, which is Haiku's wheelhouse.
+    # (3) Cache reads are excluded from ITPM accounting (per
+    #     console rate-limit page), so the prompt caching in
+    #     tools.py compounds the headroom — only fresh tokens
+    #     count. Haiku's 50K + caching = comfortable margin.
+    research_model: str = "claude-haiku-4-5"
     planner_max_tokens: int = 1024
     designer_max_tokens: int = 2048
     research_max_tokens: int = 4096
