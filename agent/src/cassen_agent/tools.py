@@ -17,6 +17,7 @@ node can put it into a project_versions snapshot.
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -73,6 +74,45 @@ def _tool_result_text(result: Any) -> str:
         if isinstance(text, str):
             out.append(text)
     return "\n".join(out) if out else ""
+
+
+# Tool result fields that carry binary blobs (base64-encoded). These
+# get returned verbatim in `output_text` for the agent's snapshot path
+# (so cad/'s STEP can be converted to GLB later), but they MUST be
+# redacted before echoing the tool_result back to Claude on the next
+# iteration — otherwise a single 800 KB STEP becomes a ~250K-token
+# tool_result that overruns Haiku's 50K ITPM cap and blows up the loop.
+_BLOB_FIELDS_TO_REDACT_FOR_LLM = ("step_b64", "glb_b64", "model_b64")
+
+
+def _redact_blobs_for_llm(output_text: str) -> str:
+    """If `output_text` is JSON containing any base64 blob field, replace
+    each blob with a `<redacted N chars>` marker and return the
+    re-serialized JSON. Pass-through for non-JSON or no-blob payloads.
+
+    The agent's snapshot path keeps the original output_text on
+    `calls[*].output_text` (set BEFORE this redaction); only what gets
+    sent back to the LLM on the next loop iteration is shrunk.
+    """
+    if not output_text:
+        return output_text
+    if not any(f in output_text for f in _BLOB_FIELDS_TO_REDACT_FOR_LLM):
+        return output_text
+    try:
+        parsed = json.loads(output_text)
+    except Exception:  # noqa: BLE001
+        return output_text
+    if not isinstance(parsed, dict):
+        return output_text
+    changed = False
+    for field in _BLOB_FIELDS_TO_REDACT_FOR_LLM:
+        v = parsed.get(field)
+        if isinstance(v, str) and len(v) > 256:
+            parsed[field] = f"<redacted {len(v)} chars>"
+            changed = True
+    if not changed:
+        return output_text
+    return json.dumps(parsed)
 
 
 async def run_tool_using_loop(
@@ -179,11 +219,20 @@ async def run_tool_using_loop(
                         "is_error": is_error,
                     }
                 )
+                # Redact binary blobs before echoing the tool_result
+                # back to Claude — large base64 payloads (a 800 KB STEP
+                # is ~1 MB of base64 ≈ 250K tokens) trip the per-model
+                # ITPM rate limit and explode the loop. The agent-side
+                # `calls[*].output_text` above retains the unredacted
+                # version for snapshot persistence and STEP→GLB conversion.
+                content_for_llm = (
+                    _redact_blobs_for_llm(output_text) or "(no content)"
+                )
                 tool_results.append(
                     {
                         "type": "tool_result",
                         "tool_use_id": call_id,
-                        "content": output_text or "(no content)",
+                        "content": content_for_llm,
                         **({"is_error": True} if is_error else {}),
                     }
                 )

@@ -50,28 +50,60 @@ async def _convert_step_to_glb(step_b64: str) -> tuple[str, int] | None:
         print(f"[agent] glb skip: bad base64 step bytes ({exc})", file=sys.stderr)
         return None
 
+    step_size = len(step_bytes)
+    print(
+        f"[agent] glb convert: posting {step_size:,} byte STEP to cad/...",
+        file=sys.stderr,
+    )
+
+    import time as _time
+    t0 = _time.perf_counter()
+
+    # 240s timeout — cascadio's STEP→GLB conversion can take 1-3 minutes
+    # on complex composite STEPs (e.g. a quadcopter assembly with arms,
+    # landing gear, payload cradle, branding text → ~800 KB+ STEP).
+    # 60s was way too tight; runs were silently failing here, leaving
+    # the viewer with no GLB and falling back to electronics-MPN boxes.
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=240.0) as client:
             r = await client.post(
                 f"{s.cad_base_url}/convert/step-to-gltf",
                 headers={"Authorization": f"Bearer {s.cad_shared_secret}"},
                 files={"file": ("part.step", step_bytes, "model/step")},
             )
     except httpx.RequestError as exc:
-        print(f"[agent] glb skip: cad request failed ({exc})", file=sys.stderr)
+        elapsed = _time.perf_counter() - t0
+        print(
+            f"[agent] glb skip: cad request failed after {elapsed:.1f}s "
+            f"({type(exc).__name__}: {exc})",
+            file=sys.stderr,
+        )
         return None
+
+    elapsed = _time.perf_counter() - t0
 
     if r.status_code != 200:
         body_preview = (r.text or "")[:200]
         print(
-            f"[agent] glb skip: cad returned HTTP {r.status_code}: {body_preview}",
+            f"[agent] glb skip: cad returned HTTP {r.status_code} after "
+            f"{elapsed:.1f}s: {body_preview}",
             file=sys.stderr,
         )
         return None
 
     glb = r.content
     if not glb:
+        print(
+            f"[agent] glb skip: cad returned 200 but empty body after "
+            f"{elapsed:.1f}s",
+            file=sys.stderr,
+        )
         return None
+    print(
+        f"[agent] glb convert: ok — {step_size:,} byte STEP -> "
+        f"{len(glb):,} byte GLB in {elapsed:.1f}s",
+        file=sys.stderr,
+    )
     return base64.b64encode(glb).decode("ascii"), len(glb)
 
 
