@@ -144,8 +144,33 @@ function useIsMobile(): boolean {
 function GLBModel({ url }: { url: string }) {
   const { scene } = useGLTF(url);
   // Clone so multiple mounts don't share mutable transforms; lazy-clone
-  // on first render keeps drei's cache happy.
-  const cloned = useMemo(() => scene.clone(true), [scene]);
+  // on first render keeps drei's cache happy. Then:
+  // 1. Rotate -90° on X to convert build123d's Z-up (cad/CAD convention)
+  //    to three.js's Y-up (rendering convention). Without this, a drone
+  //    that's flat in XY ends up standing on its edge.
+  // 2. Override every Mesh's material with a contrasting brushed-metal
+  //    look so the geometry reads against the near-black canvas
+  //    background. The default build123d material is mid-gray which
+  //    blends in.
+  const cloned = useMemo(() => {
+    const obj = scene.clone(true);
+    obj.rotation.x = -Math.PI / 2;
+    const overrideMaterial = new THREE.MeshStandardMaterial({
+      color: "#cbd5e1",        // light slate — high contrast on black bg
+      metalness: 0.55,
+      roughness: 0.4,
+      envMapIntensity: 1.1,
+    });
+    obj.traverse((child) => {
+      if ((child as THREE.Mesh).isMesh) {
+        const mesh = child as THREE.Mesh;
+        mesh.material = overrideMaterial;
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+      }
+    });
+    return obj;
+  }, [scene]);
   return <primitive object={cloned} />;
 }
 

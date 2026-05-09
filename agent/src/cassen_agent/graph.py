@@ -424,6 +424,80 @@ result = result + label
 result = Part() + result
 ```
 
+# Make the design DETAILED, not skeletal
+
+A "minimum viable shape" with no surface features looks like a CAD \
+exercise, not a product. Every design should have ENOUGH detail to \
+read as the real thing in a 3D viewer. After laying out the major \
+volumes, add at least 4-6 of the following — pick what fits the \
+project:
+
+- **Rounded edges** via `fillet(part.edges(), radius=R)`. Use 1-3 mm \
+  fillets on outer corners that a human would touch or see. Major \
+  visual upgrade for almost no extra mass.
+- **Chamfered openings** via `chamfer(part.edges(), length=L)` on the \
+  rim of holes, hatches, lid-meets-body lines.
+- **Functional cavities** — subtract Boxes/Cylinders to model the \
+  battery bay, electronics compartment, motor housing internals. \
+  Don't leave the body solid.
+- **Ventilation slots** — a loop of subtracted thin Boxes around the \
+  perimeter of an enclosure or motor housing.
+- **Wire / cable channels** — small subtracted slots routed between \
+  components.
+- **Mounting bosses** — short Cylinders extruded inside a cavity for \
+  M3 captive nuts or PCB standoffs (radius 3-4 mm, height 4-8 mm).
+- **Realistic component stand-ins** — model motors as a Cylinder + \
+  smaller Cylinder cap, props as thin elongated Cylinders or Boxes \
+  rotated 90° on Y, batteries as a recessed rectangular pocket. \
+  Visual placeholders make the design read as the real product.
+- **Branding** — `extrude(Text(...), amount=...)` either raised on the \
+  surface or recessed (subtract instead of add). Always include if \
+  the user named the project.
+- **Functional pattern details** — bolt-circle holes around motor \
+  flanges, hex grip patterns on knobs, ribs on a payload bay floor, \
+  drainage slots on a planter.
+
+Aim for ≥10 distinct geometric features per script (a hub + 4 arms + \
+4 motor mounts + 4 motor stubs + payload bay + nameplate is 14 — \
+that's the FLOOR, not the ceiling). Prefer one detailed script over \
+the simplest possible script — the user wants to see their product, \
+not a stick figure.
+
+# Build123d additional ops for detail
+
+```python
+# Round edges of a PRIMITIVE before composing — apply fillet to the
+# Box/Cylinder while it is still simple. Filleting the final composite
+# (after subtracts and unions) often fails with
+# `OCP_NotDone: BRep_API: command not done`.
+plate = Box(120, 80, 50)
+plate = fillet(plate.edges().filter_by(Axis.Z), radius=3)  # round only the vertical edges
+result = Part() + plate
+
+# Subtract cavities, add bosses, etc. AFTER the primitive is filleted
+cavity = Box(112, 72, 46).translate(Vector(0, 0, 1))
+result = result - cavity
+
+# Mounting boss inside a cavity (cylinder + counterbore for the bolt head)
+boss = Cylinder(radius=4, height=8).translate(Vector(20, 20, 5))
+result = result + boss
+counterbore = Cylinder(radius=2, height=10).translate(Vector(20, 20, 3))
+result = result - counterbore
+
+# Ventilation slot ring (loop of thin subtracted boxes around an enclosure)
+for i in range(8):
+    angle = i * 45
+    slot = Box(2, 12, 6).translate(Vector(35, 0, 10)).rotate(Axis.Z, angle)
+    result = result - slot
+
+# Chamfer also works on primitive edges:
+edge_part = Cylinder(radius=10, height=20)
+edge_part = chamfer(edge_part.edges(), length=1)  # bevel both rims
+```
+
+Rule of thumb: **fillet/chamfer the simple shapes, not the composite**. \
+Pattern is: build primitive → fillet/chamfer it → fold into `result`.
+
 # Decomposition heuristics by project type
 
 - **Enclosure** = outer shell (`Box`) − inner cavity (`Box`, smaller, translated up by wall thickness) ± mounting bosses ± vents ± lid features.
