@@ -513,7 +513,8 @@ HARD RULES (non-negotiable):
 - Build geometry by accumulating `result = result + part` ONE AT A TIME. Start with `result = Part() + <first>` and END with `result = Part() + result` (the defensive cast that prevents the ShapeList export failure).
 - Use only the API in the cheat sheet. Do NOT use `Cone`, `Angle`, `Vector(x=, y=, z=)`. If you reach for an API not in the cheat sheet, it almost certainly doesn't exist.
 - Pick ONE final part. The trailing JSON has one `mechanical_part` object, not a list.
-- If a script errors, READ THE STDERR. The error names the exact line and the exact API misuse. Fix THAT specific bug (don't rewrite from scratch unless the error is structural). Then retry. Never fall back to a parametric primitive after a script error — fix the script.
+- If a script errors, READ THE STDERR. The error names the exact line and the exact API misuse. Fix THAT SPECIFIC LINE — do NOT strip other features. If a fillet on edge X fails, change the fillet edge selection or radius; keep the cavity, the ventilation slots, the bosses, the branding text intact. A simplified retry that drops 80% of the design is worse than no retry — the user gets a "cube" instead of their product. The size_bytes of a real product script should be ≥ 200 KB; if your retry produces under 100 KB you've stripped too much.
+- The `rationale` JSON field MUST describe ONLY what is in the STEP that succeeded, not the original plan. If the script's first attempt had 14 features but the retry has 6, the rationale lists those 6. Never let the rationale promise more than the geometry delivers — downstream consumers (BoM, viewer caption, sourcing agent) trust this field.
 - Failing to call generate_from_script (or generate_part for the rare primitive-fit case) is a failure.
 
 Process:

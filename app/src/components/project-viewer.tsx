@@ -233,7 +233,12 @@ export function ProjectViewer({
       <Canvas
         shadows={!isMobile}
         dpr={isMobile ? [1, 1.5] : [1, 2]}
-        camera={{ position: [4, 4, 6], fov: 45 }}
+        // Camera position chosen for a 3/4 view of any object centered
+        // at origin — slightly above (Y=4), in front (Z=8), offset to
+        // the side (X=6). drei's <Bounds fit/> below dollies in/out to
+        // frame the model regardless of its actual size, so this is
+        // really an angle (not a distance).
+        camera={{ position: [6, 4, 8], fov: 40 }}
         gl={{ antialias: true, powerPreference: "high-performance" }}
         onCreated={({ gl }) => {
           gl.toneMapping = THREE.ACESFilmicToneMapping;
@@ -241,7 +246,11 @@ export function ProjectViewer({
         }}
       >
         <color attach="background" args={["#0a0a0a"]} />
-        <ambientLight intensity={0.45} />
+        {/* Three-point lighting: key from upper-front-right, fill
+            from upper-back-left, rim from below. Ensures any geometry
+            reads as 3D regardless of orientation; without the rim
+            light, dark-on-dark shapes blend into the background. */}
+        <ambientLight intensity={0.35} />
         <directionalLight
           position={[6, 8, 4]}
           intensity={1.1}
@@ -249,9 +258,11 @@ export function ProjectViewer({
           shadow-mapSize-width={isMobile ? 512 : 1024}
           shadow-mapSize-height={isMobile ? 512 : 1024}
         />
+        <directionalLight position={[-5, 6, -4]} intensity={0.5} />
+        <directionalLight position={[0, -3, 2]} intensity={0.3} color="#a8c0e0" />
         {showGlb && glbUrl ? (
           <Suspense fallback={null}>
-            <Bounds fit clip observe margin={1.2}>
+            <Bounds fit clip observe margin={1.4}>
               <GLBModel url={glbUrl} />
             </Bounds>
           </Suspense>
@@ -287,6 +298,11 @@ export function ProjectViewer({
           minDistance={1}
           maxDistance={50}
           target={[0, 0, 0]}
+          // Slow turntable rotation so a static composite reads as 3D
+          // without the user having to drag. Stops the moment the user
+          // touches the canvas (drei pauses autoRotate on user input).
+          autoRotate={showGlb}
+          autoRotateSpeed={0.6}
         />
         <EffectComposer multisampling={isMobile ? 0 : 4}>
           <Bloom
