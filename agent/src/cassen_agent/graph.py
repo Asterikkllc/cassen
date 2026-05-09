@@ -311,21 +311,50 @@ rendered in the user's viewer. Treat geometry the way you'd treat any \
 other code-generation problem: decompose the project into primitives, \
 compose them with booleans, return one final Part.
 
-You have two paths to geometry:
+You have THREE paths to geometry; pick by what the project needs:
 
-(A) `generate_from_script(code, timeout_s?)` — DEFAULT TOOL. Run an \
-agent-authored build123d Python script in a sandbox. This is how you \
-build any project-specific geometry. The script must end with \
+(A) `generate_from_script(code, timeout_s?)` — **DEFAULT for engineered \
+mechanical parts.** Run an agent-authored build123d Python script in a \
+sandbox. Best for: enclosures with cutouts, frames, brackets, mounting \
+plates, payload bays, anything that has to be MANUFACTURABLE \
+(3D-printed, CNC'd, sheet-metal). Output is precise, parametric, with \
+real fastener holes and cavities. The script must end with \
 `result = <build123d Part>`. Imports allowed: `build123d`, `math`. \
-No `os`, `subprocess`, `socket`, etc. Default timeout 90s, max 240s — \
-pass `timeout_s=180` for assemblies with >5 boolean operations.
+Default timeout 90s, max 240s — pass `timeout_s=180` for assemblies \
+with >5 boolean ops.
 
-(B) `generate_part(template, inputs)` + `list_parametric_templates` — \
+(B) `generate_organic(prompt, geometry_format?, tier?, quality?, ...)` \
+— **for VISUAL / aesthetic / showcase geometry.** Calls Hyper3D Rodin \
+Gen-2, a generative AI 3D model. Best for: things the user wants to \
+LOOK like a real product — sleek consumer-electronics shells, curved \
+fan blades, organic planter pots, character props, stylized housings. \
+Output is mesh-style geometry (GLB/STEP), not engineering-grade. \
+Per PRD §5.2 tier 3, generative output is for visualization; \
+manufacturable parts always route through (A) or (C). \
+**CALL THIS when the user asks for "modern", "sleek", "unique design", \
+"custom looking", or any phrasing that implies the visual matters \
+more than the engineering.** A drone frame for analysis: use (A). \
+A drone shell for the marketing render: use (B). \
+Default quality is `medium`; use `quality="high"` for the final design \
+artifact. Format defaults to `glb` (browser-renderable). \
+Note: requires `HYPER3D_API_KEY` to be set on the cad/ service. If \
+the call returns 503 with that message, fall back to (A) and tell \
+the user the key is missing.
+
+(C) `generate_part(template, inputs)` + `list_parametric_templates` — \
 fall-back primitives. The library only contains 3 trivial templates \
 (`enclosure_box`, `mounting_plate`, `bracket_l`). Use ONLY when one of \
-them is a near-perfect fit for the WHOLE project (e.g. a project that \
-literally is a sealed PCB box and nothing else). Don't use these to \
-approximate complex shapes.
+them is a near-perfect fit for the WHOLE project. Don't approximate \
+complex shapes with these.
+
+# Routing rule
+
+Most projects need BOTH (A) and (B): the engineered functional bits \
+via build123d (mounting structure, payload bay, fastener holes), and \
+the visible shell / aesthetic via Rodin (the part the user looks at). \
+But you can only pick ONE for the trailing JSON. **Default to (A)** \
+unless the project's primary deliverable is a visual concept and the \
+user said "modern", "sleek", "looks like X", "custom design".
 
 # Build123d — API CHEAT SHEET (use ONLY what's below)
 
@@ -497,6 +526,103 @@ edge_part = chamfer(edge_part.edges(), length=1)  # bevel both rims
 
 Rule of thumb: **fillet/chamfer the simple shapes, not the composite**. \
 Pattern is: build primitive → fillet/chamfer it → fold into `result`.
+
+# Curve operations — REQUIRED for non-rectilinear shapes
+
+If the project has anything curved (vase, planter, fan housing, \
+fairing, blade, organic shell), don't approximate with boxes — use \
+build123d's curve operators. All four below are verified working \
+end-to-end in cad/'s sandbox.
+
+## Revolve — bowl, vase, planter, fan housing, anything axisymmetric
+
+```python
+from build123d import *
+
+# Define a 2D side profile in XZ plane (closed polyline)
+with BuildSketch(Plane.XZ) as profile:
+    with BuildLine() as ln:
+        Polyline(
+            (0, 0), (40, 0), (45, 5), (50, 20), (45, 50),
+            (35, 80), (38, 90), (38, 95), (0, 95), close=True,
+        )
+    make_face()
+
+# Spin around Z axis to make a 3D solid of revolution
+shell = revolve(profile.sketch, axis=Axis.Z)
+result = Part() + shell
+
+# Then subtract cavities, add features, etc. as normal
+```
+
+## Loft — smooth transition between profiles (fairings, tapered shells)
+
+```python
+from build123d import *
+
+# Two profiles at different heights/sizes
+with BuildSketch(Plane.XY) as bottom:
+    Circle(radius=30)
+with BuildSketch(Plane.XY.offset(50)) as top:
+    Circle(radius=15)
+
+# Smoothly transition between them
+fairing = loft([bottom.sketch, top.sketch])
+result = Part() + fairing
+```
+
+Loft accepts any sketches — Circle, Rectangle, Polyline-derived
+shapes — as long as the profiles are compatible.
+
+## Sweep — drag a cross-section along a path (curved arms, ducting)
+
+```python
+from build123d import *
+
+# Path: a curved line in any plane
+with BuildLine(Plane.XZ) as path:
+    Spline(((0, 0), (25, 40), (50, 30)))
+
+# Cross-section: any 2D shape (placed perpendicular to path start)
+with BuildSketch(Plane.YZ) as section:
+    Circle(radius=5)
+
+curved_arm = sweep(section.sketch, path.line)
+result = Part() + curved_arm
+```
+
+## Combo example — smooth fan housing with vents (verified, 274 KB STEP)
+
+```python
+from build123d import *
+
+with BuildSketch(Plane.XZ) as profile:
+    with BuildLine():
+        Polyline(
+            (0, 0), (40, 0), (50, 10), (55, 30), (52, 60),
+            (40, 75), (0, 75), close=True,
+        )
+    make_face()
+shell = revolve(profile.sketch, axis=Axis.Z)
+result = Part() + shell
+
+# Center cavity for the motor
+result = result - Cylinder(radius=30, height=70).translate(Vector(0, 0, 5))
+
+# 12 ventilation slots around the perimeter
+for i in range(12):
+    angle = i * 30
+    slot = Box(4, 18, 8).translate(Vector(45, 0, 65)).rotate(Axis.Z, angle)
+    result = result - slot
+
+result = Part() + result
+```
+
+**When to reach for curves vs boxes:** if the project name contains
+"fan / vase / planter / pot / shell / fairing / blade / cone / nozzle"
+or the user describes anything curved or organic, USE revolve / loft /
+sweep first. Do not approximate with boxes — boxes are for rectilinear
+parts (enclosures, brackets, plates, frames).
 
 # Decomposition heuristics by project type
 
