@@ -1,6 +1,6 @@
 import Link from "next/link";
 import Image from "next/image";
-import { Show, UserButton } from "@clerk/nextjs";
+import { ClerkLoaded, ClerkLoading, Show, UserButton } from "@clerk/nextjs";
 
 export function SiteHeader() {
   return (
@@ -42,11 +42,24 @@ export function SiteHeader() {
             >
               Projects
             </Link>
-            <UserButton
-              appearance={{
-                elements: { avatarBox: "h-8 w-8" },
-              }}
-            />
+            {/* Clerk's UserButton injects a client-only div on
+                hydration that doesn't match the server render — gate
+                it behind ClerkLoaded so it only mounts after Clerk's
+                runtime is up. ClerkLoading shows a placeholder of
+                the same size to avoid layout shift. */}
+            <ClerkLoading>
+              <span
+                aria-hidden="true"
+                className="h-8 w-8 rounded-full bg-neutral-800/60"
+              />
+            </ClerkLoading>
+            <ClerkLoaded>
+              <UserButton
+                appearance={{
+                  elements: { avatarBox: "h-8 w-8" },
+                }}
+              />
+            </ClerkLoaded>
           </Show>
         </nav>
       </div>
