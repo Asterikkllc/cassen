@@ -61,6 +61,49 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Project not found" }, { status: 404 });
   }
 
+  // If AGENT_BASE_URL is set, proxy to the agent service. The agent
+  // persists the user + assistant messages itself, so we skip the
+  // direct-DB insert below in that case. Direct-Anthropic fallback
+  // still runs when the agent isn't deployed (early development).
+  const agentBase = (process.env.AGENT_BASE_URL || "").trim();
+  if (agentBase) {
+    const upstream = await fetch(`${agentBase.replace(/\/$/, "")}/runs/chat-stream`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "text/event-stream",
+        ...(process.env.AGENT_SHARED_SECRET
+          ? { authorization: `Bearer ${process.env.AGENT_SHARED_SECRET}` }
+          : {}),
+      },
+      body: JSON.stringify({
+        project_id: project.id,
+        message: parsed.message,
+      }),
+      cache: "no-store",
+    }).catch((err) => {
+      console.error("[chat] agent fetch failed", err);
+      return null;
+    });
+    if (upstream && upstream.ok && upstream.body) {
+      return new Response(upstream.body, {
+        status: 200,
+        headers: {
+          "content-type": "text/event-stream",
+          "cache-control": "no-cache, no-transform",
+          connection: "keep-alive",
+          "x-accel-buffering": "no",
+        },
+      });
+    }
+    // Agent unreachable or rejected — fall through to direct
+    // Anthropic so the user still gets a reply.
+    console.warn(
+      "[chat] agent upstream unhealthy; falling back to direct Anthropic",
+      upstream?.status,
+    );
+  }
+
   const admin = getSupabaseAdmin();
 
   // 1. Persist user message immediately. SSE consumers see it on a
